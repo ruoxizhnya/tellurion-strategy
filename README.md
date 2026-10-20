@@ -1,40 +1,40 @@
 # tellurion-strategy
 
-> module: `tellurion-strategy` ｜ 状态：**预留（触发式）**——当前为占位仓，**未启动**。触发条件同 X 线通则；启动前先立单。
+> module: `tellurion-strategy` ｜ 状态：**预留（S0 占位，触发式启动）——尚未启动，无实现**
 
-策略资产的**真相源**：定义、版本、artifact 构建与解析、参数 schema。运行时（`on_bar`、cursor、WASM 实例）留在 core。
+策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
-这是「切一半」的仓：`pkg/strategy` 的定义/资产侧出来，**运行时侧**留下来。整包搬走会让策略执行变远程调用。
+## 目录
+
+| 路径 | 内容 |
+|---|---|
+| `docs/` | 本仓文档：台账 / 边界 / 决策 / 归档 —— 从这里进：`docs/README.md` |
+| `AGENTS.md` | 本仓入口（构建、边界、禁止、依赖版本） |
+| `doc.go` | 占位包（无实现） |
+
+## 快速开始
+
+```bash
+go build ./...
+go vet ./...
+go test ./...
+```
+
+本仓**单独 checkout 就能跑通**上面三条。需要别的仓源码才过 → 边界错了，不是加 `replace` 能解决的问题。
 
 ## 边界
 
-**可以**
-- 持有 `strategy` schema 的 DDL
-- 管理 artifact 与版本（`artifact_hash` 是执行真相，`version_hash` 只是人读标签）
+**可以**：策略定义、版本、artifact 登记与解析（`carrier=dsl / wasm`）；策略资产的内容寻址与回滚
 
-**不可以**
-- 在回测内循环里被执行（逐 bar 远程 = 硬否决）
-- 覆盖已 promote 的 artifact 行（promote 只能新增指针）
+**不可以**：策略运行时（逐 bar / 逐笔执行）——那是 core 进程内的 WASM host，永不做成服务；import core 的实现包；把引擎状态搬进本仓
 
-## 依赖方向
+## 文档
 
-```
-tellurion-strategy
-```
+- 文档导航：`docs/README.md`
+- 本仓台账：`docs/TASKS.md`（唯一；跨仓任务只留指针）
+- 边界与依赖方向：`docs/ARCHITECTURE.md`
+- 决策记录：`docs/adr/`
 
-- 契约与工具一律以 **tag** 依赖（`github.com/ruoxizhnya/tellurion-contracts` / `-kit`），
-  **禁止 `replace` 指向仓外路径**（单仓不可构建）。
-- `go.work` 一律不入库。
+## 许可
 
-## 施工入口
-
-本仓所有任务登记在 **`tellurion` 仓的 `docs/TASKS.md`**（单一台账，避免双写）。
-在台账出现本仓的单号之前，**不要在此写实现**。
-
-## 权威文档
-
-| 主题 | 位置 |
-|---|---|
-| 仓清单与命名 | `tellurion:docs/design/qt-decoupling/repo-inventory.md` |
-| 分仓拓扑与阶梯 | `tellurion:docs/design/qt-decoupling/repo-topology-and-naming.md` |
-| P0 修复基线 | `tellurion:docs/design/qt-decoupling/p0-round2-review.md` |
+MIT（见 `LICENSE`）。
