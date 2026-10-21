@@ -17,6 +17,7 @@ verified-by: 功能边界固化（三份契约：db / api / dataflow）
 | `strategy.strategy_definitions` | 定义（原 `strategies` 升级）：`carrier` / `abi_version` / `scope` / `capability` / `entry` / `active_version_hash` | 改造 |
 | `strategy.strategy_artifacts` | artifact 元数据：`version_hash` + `artifact_hash` / `size_bytes` / `memory_limit_bytes` / `imports` / `toolchain` / `status` / `storage` | 新建 |
 | `strategy.strategy_artifact_blobs` | 字节码本体（本地栈 BYTEA，8 MiB 上限；`storage='url'` 时可为空） | 新建 |
+| `quant.external_signals` | 外部模型信号注入（`content_hash` 幂等去重，`SignalStrategy` 按 `as_of` 拉取） | **不属本仓** · owner = **core strategy-runtime 模块**（与 H5 裁决的 `quant.strategy_state` 同源，SPEC-R-02）；DDL 在 `tellurion:pkg/storage/postgres.go`（Migration 048），写者 `tellurion:pkg/strategy/signal_store.go` |
 
 约束：`UNIQUE(strategy_id, version_hash)`；`version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
 
