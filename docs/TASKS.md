@@ -17,25 +17,25 @@ verified-by: 任务台账批量重分布（X 线单展开：QT-41/QT-41b 迁入�
 
 > **约定变更（2026-10-21）**：原「占位仓不写正式六字段任务单」作废——X 线任务单已展开为本仓正式任务（见下）。M5/M8 开工前置不变；实现仍未开工，开工前仍须过前置两条。
 
-### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ⬜
+### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ⬜（2026-10-21：A/E/F/G/H 五项已裁决，阻塞解除）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
 - **① 目标**：策略真相源在服务侧，引擎只持可驱逐只读副本；`id@artifact_hash` 可离线复现。
-- **② 上下文**：`strategy-asset-service-api.md` + `strategy-source-of-truth-and-cache.md`（D13/D14）+ QT-03 的 hash 体系；**未决 A（BYTEA vs 对象存储）——下文 ③-① 的 BYTEA 落地是「假设，需裁决后生效」**（阻塞单：本单，裁决见设计集 README 待裁决表 A 行；未裁决前不开工 ③-①）。
-- **③ 要求**：① `strategies` 加列（carrier/abi_version/scope/capability/entry/`active_version_hash`/`active_artifact_hash`）+ `strategy_artifacts` + blobs（**假设，需裁决 A 生效后落地**：blob 载体按 BYTEA 假设写，A 若改判对象存储则本项重写）；② 写侧 7 端点、读侧 2 端点（resolve/artifact）；③ 缓存按 `artifact_hash`（永不失效）+ latest 的失效策略——**TTL vs 事件失效二选一属未决 F，未裁决前本项按「假设，需裁决后生效」处理，不得静默二选一**（阻塞单：本单，裁决见 README 待裁决表 F 行）；④ promote 不覆盖 artifact 行；⑤ 14 个内置策略登记为 `carrier=builtin`。
-- **④ 约束与非目标**：策略服务**不算信号**；不改执行路径的"先查 artifact 再回退内置"在 QT-26 已定的顺序；不做对象存储（除非 A 改判）；**A/F 未裁决的假设项不许按假设值直接上 main**（裁决落地前相关子项保持 ⛔）。
+- **② 上下文**：`strategy-asset-service-api.md` + `strategy-source-of-truth-and-cache.md`（D13/D14）+ QT-03 的 hash 体系；**A/E/F/G/H 已于 2026-10-21 裁决**（见设计集 `README.md` 裁决记录）：A=本地栈 PG BYTEA + 8 MiB 上限、保留 `storage='url'` 逃逸阀；E=内存 LRU 一级 + 本地磁盘内容寻址二级；F=latest 用 TTL 300s，不引入事件；G=保留 init + 同步登记、不做全量迁移；H=`carrier=external` 纳入同一 `strategy_ref` 命名空间。
+- **③ 要求**：① `strategies` 加列（carrier/abi_version/scope/capability/entry/`active_version_hash`/`active_artifact_hash`）+ `strategy_artifacts` + blobs（**A 已裁决**：本地栈落 PG BYTEA，单 blob ≤ 8 MiB 且超限 fail-loud，`storage='url'` 只保留列分支作将来逃逸阀）；② 写侧 7 端点、读侧 2 端点（resolve/artifact）；③ 缓存按 `artifact_hash`（永不失效）+ latest（**F 已裁决：TTL 300s**，promote 响应携带新 hash 供本进程主动失效，不引入 webhook/msgbus；**E 已裁决**：内存 LRU 一级 + 本地磁盘内容寻址二级，按容量与 TTL 驱逐）；④ promote 不覆盖 artifact 行；⑤ 14 个内置策略登记为 `carrier=builtin`（**G 已裁决：保留 init 启动 + 同步登记，不做全量迁移**）；⑥ `carrier=external` 纳入同一 `strategy_ref` 命名空间（**H 已裁决**），解析按 carrier 路由，外部载体 hash 语义单独成文、不与 `artifact_hash` 混用。
+- **④ 约束与非目标**：策略服务**不算信号**；不改执行路径的"先查 artifact 再回退内置"在 QT-26 已定的顺序；不做对象存储（A 已裁 BYTEA，`storage='url'` 仅保留列分支、不实现）；不引入 webhook/msgbus（F 已裁 TTL）；不把内置策略全量迁移（G 已裁）；**裁决已落，相关子项按裁决值执行，不再按「假设」对待。**
 - **⑤ 验收**：服务停机后已缓存 hash 的回测照跑且结果一致；同源码两工具链 → 两 artifact 可分别追溯；`id@version_hash` 解析结果回写实际 `artifact_hash`。
 - **⑥ 边界**：只做资产与解析；编译服务是独立单 **QT-41b**（本单 ①~⑤ 不含编译链路）。
 
-### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] ⛔（阻塞于待裁决 D：编译服务归属）
+### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] ⬜（2026-10-21：D 已裁决，阻塞解除）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
 - **① 目标**：策略源码到 `artifact_hash` 产物的编译链路成文并落地（编译 → 校验 → 登记 artifact），AI 生成闭环（QT-32）与人工 promote 共用同一条管线。
-- **② 上下文**：`strategy-asset-service-api.md` §4 五道门中的 Compile 门；`implementation-plan-mvp.md` §6-M2（AI 生成闭环含编译环节）；原 QT-41 ⑥ 曾以「QT-41b」悬空引用（refactor-plan-review H3），本单即其正式落点。**归属未定**：编译服务归策略资产服务（X2）还是独立能力，属待裁决 D（见设计集 README 待裁决表）；未裁决前本单 ⛔ 不开工。
-- **③ 要求**：① Compile 门语义成文（toolchain 版本固定、env-only 白名单、产物 `-target=wasm-unknown`）；② 编译产物经 QT-03 的 `artifact_hash` 登记进 QT-41 的 `strategy_artifacts`；③ 同源码两工具链 → 两 artifact 可分别追溯（与 QT-41 ⑤ 对齐）；④ 编译失败的错误语义进 contracts 哨兵错误族；⑤ 与 QT-26 ③-⑤ 五道门的 Resolve/Fetch/Verify/Mount 分界逐项对表。
-- **④ 约束与非目标**：不实现第二个编排者（ADR-023）；不放宽 `ValidateImports`；不在本单做 promote 闸门（那是 QT-32）。
+- **② 上下文**：`strategy-asset-service-api.md` §4 五道门中的 Compile 门；`implementation-plan-mvp.md` §6-M2（AI 生成闭环含编译环节）；原 QT-41 ⑥ 曾以「QT-41b」悬空引用（refactor-plan-review H3），本单即其正式落点。**D 已于 2026-10-21 裁决**：编译服务落在**本仓的独立进程/容器（`cmd/compiler`，独立镜像、锁 toolchain 版本）**，不新建第 13 个仓，也不放 agent 仓（`agent` 只负责生成源码并调用编译服务）；ADR-027 §2.6.1「编译在 ai-service」登记为**被本裁决修订**。
+- **③ 要求**：① Compile 门语义成文（toolchain 版本固定、env-only 白名单、产物 `-target=wasm-unknown`）；② 编译产物经 QT-03 的 `artifact_hash` 登记进 QT-41 的 `strategy_artifacts`；③ 同源码两工具链 → 两 artifact 可分别追溯（与 QT-41 ⑤ 对齐）；④ 编译失败的错误语义进 contracts 哨兵错误族；⑤ 与 QT-26 ③-⑤ 五道门的 Resolve/Fetch/Verify/Mount 分界逐项对表；⑥ 交付形态按 D 裁决：本仓 `cmd/compiler` 独立进程/容器，toolchain 镜像固定版本，产物登记走本仓资产服务内部 API（不直连 DB、不落 core）。
+- **④ 约束与非目标**：不实现第二个编排者（ADR-023）；不放宽 `ValidateImports`；不在本单做 promote 闸门（那是 QT-32）；**不在 agent 仓实现编译器**（D 已裁），不新增第 13 个仓。
 - **⑤ 验收**：一份 Go 子集策略源码经本管线产出 artifact 且 `artifact_hash` 可离线复现；编译失败可检索；五道门对表文档归档。
 - **⑥ 边界**：只做编译链路；资产存储/解析是 QT-41；AI 生成闭环是 QT-32。
 
