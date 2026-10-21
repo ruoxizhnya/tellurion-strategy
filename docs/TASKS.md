@@ -49,6 +49,7 @@ verified-by: 首次建立本仓台账（QT-08 十二仓自治三件套）
 |---|---|---|
 | QT-41 | X2 策略资产服务（定义/版本/artifact/resolve） | `tellurion:docs/TASKS.md` |
 | QT-30 | M0 市场级状态机 PoC（决定 artifact 形态） | `tellurion:docs/TASKS.md` |
+| QT-08 | 本仓 CI / AGENTS / 台账由该单一并补齐 | `tellurion:docs/TASKS.md` |
 
 ---
 
