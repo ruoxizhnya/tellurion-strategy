@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-20
-verified-by: 功能边界固化（三份契约：db / api / dataflow）
+last-verified: 2026-10-22
+verified-by: 接口对表时订正两处过时声明（A 已裁 BYTEA；新列 6/7 不一致待裁）
 ---
 
 # DB Schema — tellurion-strategy
@@ -57,4 +57,7 @@ verified-by: 功能边界固化（三份契约：db / api / dataflow）
 
 ## 5. 待定
 
-- 对象存储 vs BYTEA（未决 A）当前按 BYTEA 落地；改判要立 ADR。
+- ~~对象存储 vs BYTEA（未决 A）当前按 BYTEA 落地；改判要立 ADR~~ → **A 已裁决（2026-10-21）**：本地栈 PostgreSQL `BYTEA`，**单 blob ≤ 8 MiB 且超限 fail-loud**（不静默截断、不落本地盘）；`storage='url'` **只保留列分支、不实现**（将来的逃逸阀）。源文 `tellurion:docs/design/qt-decoupling/strategy-asset-service-api.md` 的裁决记录。
+- ⚠️ **上表 `strategy_definitions` 那行列了 6 个新列，QT-41 ③-① 说的是 7 个**：多出来的是 `active_artifact_hash`，它**只在工单正文里出现，设计文档 §1.1 与本表都没有**。
+  两种收口方式（答「当前生效的是哪个字节」）：补列，或让 resolve 经 `strategy_artifacts.status='promoted'` 反查。
+  **这是待裁决，不是笔误**——登记与后果见 `docs/api-schema.md` §6.5 偏差 #1。

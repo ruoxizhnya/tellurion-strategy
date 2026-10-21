@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-21
-verified-by: 任务台账批量重分布（X 线单展开：QT-41/QT-41b 迁入）
+last-verified: 2026-10-22
+verified-by: QT-41/QT-41b 的 M8 接口对表落定（api-schema.md §6）+ 开工前置幻影模板指针改指 §4.1
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -28,6 +28,12 @@ verified-by: 任务台账批量重分布（X 线单展开：QT-41/QT-41b 迁入�
 - **⑤ 验收**：服务停机后已缓存 hash 的回测照跑且结果一致；同源码两工具链 → 两 artifact 可分别追溯；`id@version_hash` 解析结果回写实际 `artifact_hash`。
 - **⑥ 边界**：只做资产与解析；编译服务是独立单 **QT-41b**（本单 ①~⑤ 不含编译链路）。
 
+> **🔶 开工前置状态（2026-10-22）**：M8「接口对表」**已做完** → 本仓 `docs/api-schema.md` §6（写侧 7 端点 + 读侧 2 端点逐条签名 / 错误语义 / 版本策略 / 今天的实物）。
+> M5 ✅ 已结案。⇒ **本单只剩一条前置：QT-05（S1 契约层落码）**——contracts 今天零符号，而本仓 module path 是单段短名 + 禁 `replace ../`，拿不到协议类型就写不了任何 handler。
+> 对表逮出**七条前提偏差**（§6.5），其中两条要主任裁：**#1** 新列到底是 6 还是 7（`active_artifact_hash` 只在工单里有）、**#4** `abi_version` 设计四个取值而 `contracts` 只认 `on_bar/1|2`。
+> 另两条会直接误导第一行代码：**#3** `version_hash` 策略侧零实现、`ArtifactHash()` 生产路径零调用方；**#5** 设计的 9 个哨兵错误代码里一个都不存在（其中两个与既有 `ErrAbiVersionMismatch` / `ErrImportNotWhitelisted` 语义重叠，另造就是两处真相）。
+> 状态保持 ⬜ 未开工是对的，但前置已从「两项 + 一堆假设」收敛为「只剩 QT-05」。
+
 ### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] ⬜（2026-10-21：D 已裁决，阻塞解除）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
@@ -39,10 +45,17 @@ verified-by: 任务台账批量重分布（X 线单展开：QT-41/QT-41b 迁入�
 - **⑤ 验收**：一份 Go 子集策略源码经本管线产出 artifact 且 `artifact_hash` 可离线复现；编译失败可检索；五道门对表文档归档。
 - **⑥ 边界**：只做编译链路；资产存储/解析是 QT-41；AI 生成闭环是 QT-32。
 
+> **🔶 开工前置状态（2026-10-22）**：M8 对表已覆盖本单 —— `docs/api-schema.md` §6.3 把**五道门逐项对表**（Resolve → Fetch → Verify → **Compile** → Mount），并订正了 ③-⑤ 那句「Resolve/Fetch/Verify/Mount」的四项写法（源文是五项、Compile 在 Mount 之前；见 §6.5 偏差 #2，不改写工单正文，以 §6.3 为准）。
+> 本单的门禁结论：**编译管线今天不存在**（无 `cmd/compiler`、本机无 tinygo/wat2wasm、`staticcheck.CheckOrError` 返回匿名 error 不可检索），
+> 而 agent 侧 `pipeline.go:634 validateCompilation` 只是临时目录 `go build` 的**检查**、不产出字节 ⇒ **产不出 `artifact_hash`**。
+> 所以 QT-41b 的第一条产出物不是编译器，是**错误语义进 contracts**（③-④）——那要等 QT-05。D 裁决（本仓 `cmd/compiler`，不建第 13 仓）已由 ADR-027 §2.6.1 的修订承接，见 `tellurion-docs:docs/adr/adr-035-repo-inventory-and-naming.md` 附录 D。
+
 
 ---
 
-> **⚠️ 开工前置（refactor-plan-review M5/M8，2026-10-20 登记）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：① 建仓/升格前先与 ADR-027 §2 对账（12 仓是上限/当前规划，不是承诺终态）；② 本仓设计文档先写「**接口对表**」小节（签名 + 错误语义 + 版本策略，模板见 `tellurion:docs/design/qt-decoupling/target-module-topology.md` UnifiedDataPoint 节），**未对表不开工**。正文以彼处为准，此处只留指针、不镜像。
+> **⚠️ 开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 本仓 M8 已做完）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：① 建仓/升格前先与 ADR-027 §2 对账（12 仓是上限/当前规划，不是承诺终态）—— ✅ **M5 已结案**，结论在 `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2（六仓 ≠ 六进程，`strategy` 在服务拓扑里**有位子**，容器升格仍需一条 ADR）；② 本仓设计文档先写「**接口对表**」小节（签名 + 错误语义 + 版本策略）—— ✅ **M8 已落**，见本仓 [`api-schema.md`](api-schema.md) §6（9 端点 + 五道门逐项对表，附七条前提偏差）。**未对表不开工**这条对本仓两张单已解除。
+> 模板：`tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1。
+> ~~模板见 `target-module-topology.md` UnifiedDataPoint 节~~ —— 那是**幻影节名**（core 全文 grep `UnifiedDataPoint` 在该文件 0 命中），2026-10-22 改指 §4.1。正文以彼处为准，此处只留指针、不镜像。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 
