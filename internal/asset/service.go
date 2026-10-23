@@ -314,6 +314,11 @@ func (s *Service) ValidateVersion(ctx context.Context, id, versionHash, toolchai
 	if err != nil {
 		return Artifact{}, err
 	}
+	// 元数据接口不带字节：校验门必须拿到真实字节，不能拿「有这行」当通过。
+	a, err = s.store.GetArtifact(ctx, id, a.ArtifactHash)
+	if err != nil {
+		return Artifact{}, err
+	}
 	if err := Verify(a); err != nil {
 		_ = s.store.UpdateStatus(ctx, id, a.ArtifactHash, StatusBuilt, StatusRejected, err.Error())
 		return Artifact{}, err
@@ -326,10 +331,8 @@ func (s *Service) ValidateVersion(ctx context.Context, id, versionHash, toolchai
 
 // Promote 是 W5：validated → promoted，并写 definition 的 active_*。
 //
-// 顺序：先改 artifact 行、再写 active 指针。若第二步失败，artifact 已是 promoted
-// 但指针未动——下一次 promote 会因状态机拒绝（validated → promoted）。当前内存
-// store 下第二步只会是「定义不存在」，而定义在第一步前已校验存在，故不会发生；
-// PG 实现接上时两条语句必须同事务（登记在 docs/TASKS.md 风险条）。
+// 状态与生效指针由 Store 在**一个事务**里写（PG）或一把锁内写（Memory）；
+// 两步分开写会留下「artifact 已 promoted、latest 还指旧字节」且无法自愈的状态。
 func (s *Service) Promote(ctx context.Context, id, versionHash, toolchain string) (Artifact, error) {
 	a, err := s.pickArtifact(ctx, id, versionHash, toolchain)
 	if err != nil {
@@ -338,10 +341,7 @@ func (s *Service) Promote(ctx context.Context, id, versionHash, toolchain string
 	if a.Status != StatusValidated {
 		return Artifact{}, fmt.Errorf("%w: artifact %s is %s, want validated", ErrInvalidTransition, a.ArtifactHash, a.Status)
 	}
-	if err := s.store.UpdateStatus(ctx, id, a.ArtifactHash, StatusValidated, StatusPromoted, "promoted"); err != nil {
-		return Artifact{}, err
-	}
-	if err := s.store.SetActive(ctx, id, versionHash, a.ArtifactHash); err != nil {
+	if err := s.store.Promote(ctx, id, versionHash, a.ArtifactHash, "promoted"); err != nil {
 		return Artifact{}, err
 	}
 	return s.store.GetArtifact(ctx, id, a.ArtifactHash)
@@ -356,17 +356,8 @@ func (s *Service) Deprecate(ctx context.Context, id, versionHash, toolchain stri
 	if a.Status != StatusPromoted {
 		return Artifact{}, fmt.Errorf("%w: artifact %s is %s, want promoted", ErrInvalidTransition, a.ArtifactHash, a.Status)
 	}
-	if err := s.store.UpdateStatus(ctx, id, a.ArtifactHash, StatusPromoted, StatusDeprecated, "deprecated"); err != nil {
+	if err := s.store.Deprecate(ctx, id, versionHash, a.ArtifactHash, "deprecated"); err != nil {
 		return Artifact{}, err
-	}
-	def, err := s.store.GetDefinition(ctx, id)
-	if err != nil {
-		return Artifact{}, err
-	}
-	if def.ActiveArtifactHash == a.ArtifactHash {
-		if err := s.store.SetActive(ctx, id, "", ""); err != nil {
-			return Artifact{}, err
-		}
 	}
 	return s.store.GetArtifact(ctx, id, a.ArtifactHash)
 }
@@ -474,6 +465,10 @@ func (s *Service) Resolve(ctx context.Context, id, ref string) (ResolveResult, e
 // 字节与登记 hash 不符必须 fail-closed；storage=url 分支未实现，同一条门拒收。
 func (s *Service) ArtifactForVersion(ctx context.Context, id, versionHash, toolchain string) (Artifact, error) {
 	a, err := s.pickArtifact(ctx, id, versionHash, toolchain)
+	if err != nil {
+		return Artifact{}, err
+	}
+	a, err = s.store.GetArtifact(ctx, id, a.ArtifactHash)
 	if err != nil {
 		return Artifact{}, err
 	}

@@ -53,7 +53,8 @@ verified-by: 两处主键/列裁决落地（docs/adr/0002）+ DDL 与代码逐�
 
 - **执行机制已定（取向 ①，2026-10-23）**：Go 数组 + 启动执行、幂等、无版本表 —— 语句本体在
   `internal/asset/ddl.go` 的 `migrationStatements`，由 `asset.Migrations()` 交出副本。
-  **迁移执行入口（PG 连接 + 启动时跑）尚未接线**（当前只有 `Memory` Store；登记在 `docs/TASKS.md` QT-41 未落项）。
+  **执行入口已接线（2026-10-24）**：`cmd/assetservice` 在 DSN 非空时先 `asset.OpenPG` → `PG.Migrate(ctx)`
+  再监听；DSN 为空才退回 `Memory`（日志明确标注非持久化）。PG 实现见 `internal/asset/pgstore.go`。
 - 不另建 `migrations/*.sql`：本仓 DDL 的唯一真相是上面那个 Go 数组；`.sql` 会把真相劈成两份。
 - **只前滚**：已合并的迁移不改；修错靠新增一条。
 - 每条必须可重入（`IF NOT EXISTS` / `IF EXISTS`），且能在空库上一次跑完。

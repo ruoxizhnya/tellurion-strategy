@@ -12,8 +12,8 @@ import (
 // Store 是 strategy schema 的读写端口。
 //
 // 本仓的 DDL 唯一 owner 是 strategy（docs/db-schema.md），但**执行机制**与连接
-// 不在本包：HTTP 层、PG 实现、内存实现都走同一个端口。当前只有 Memory 实现
-// （单仓可测）；PG 实现挂在 QT-41 的下一批（见 docs/TASKS.md 的未落项）。
+// 不在本包：HTTP 层、PG 实现、内存实现都走同一个端口。Memory 供单仓测试，
+// PG 是生产实现（启动时由 asset.PG.Migrate 执行 DDL）。
 type Store interface {
 	CreateDefinition(ctx context.Context, def Definition) error
 	GetDefinition(ctx context.Context, id string) (Definition, error)
@@ -25,8 +25,15 @@ type Store interface {
 
 	SaveArtifact(ctx context.Context, a Artifact) (Artifact, error)
 	GetArtifact(ctx context.Context, id, artifactHash string) (Artifact, error)
+	// ArtifactsForVersion 只返回元数据（Bytes 为空）：字节走 GetArtifact，
+	// 避免版本列表把每个 8 MiB blob 都读一遍。
 	ArtifactsForVersion(ctx context.Context, id, versionHash string) ([]Artifact, error)
 	UpdateStatus(ctx context.Context, id, artifactHash string, from, to Status, log string) error
+
+	// Promote / Deprecate 是「状态 + 生效指针」的**单事务**写入：两步分开写
+	// 会留下 promoted 但 latest 指向旧字节的半截状态。
+	Promote(ctx context.Context, id, versionHash, artifactHash, log string) error
+	Deprecate(ctx context.Context, id, versionHash, artifactHash, log string) error
 }
 
 // Memory 是 Store 的内存实现（并发安全、深拷贝出入）。
@@ -273,7 +280,9 @@ func (m *Memory) ArtifactsForVersion(ctx context.Context, id, versionHash string
 	var out []Artifact
 	for _, a := range s.artifacts {
 		if a.VersionHash == versionHash {
-			out = append(out, a.Clone())
+			cp := a.Clone()
+			cp.Bytes = nil // 元数据接口：字节走 GetArtifact
+			out = append(out, cp)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Toolchain < out[j].Toolchain })
@@ -307,6 +316,70 @@ func (m *Memory) UpdateStatus(ctx context.Context, id, artifactHash string, from
 			a.CompileLog += "\n"
 		}
 		a.CompileLog += log
+	}
+	return nil
+}
+
+// Promote 在单锁内完成 validated → promoted 与生效指针写入。
+func (m *Memory) Promote(ctx context.Context, id, versionHash, artifactHash, log string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, err := m.strategy(id)
+	if err != nil {
+		return err
+	}
+	a, ok := s.artifacts[artifactHash]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrArtifactNotFound, artifactHash)
+	}
+	if a.Status != StatusValidated {
+		return fmt.Errorf("%w: artifact %s is %s, want %s", ErrInvalidTransition, artifactHash, a.Status, StatusValidated)
+	}
+	a.Status = StatusPromoted
+	if log != "" {
+		if a.CompileLog != "" {
+			a.CompileLog += "\n"
+		}
+		a.CompileLog += log
+	}
+	s.def.ActiveVersionHash = versionHash
+	s.def.ActiveArtifactHash = artifactHash
+	s.def.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// Deprecate 在单锁内完成 promoted → deprecated 与生效指针清空。
+func (m *Memory) Deprecate(ctx context.Context, id, versionHash, artifactHash, log string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, err := m.strategy(id)
+	if err != nil {
+		return err
+	}
+	a, ok := s.artifacts[artifactHash]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrArtifactNotFound, artifactHash)
+	}
+	if a.Status != StatusPromoted {
+		return fmt.Errorf("%w: artifact %s is %s, want %s", ErrInvalidTransition, artifactHash, a.Status, StatusPromoted)
+	}
+	a.Status = StatusDeprecated
+	if log != "" {
+		if a.CompileLog != "" {
+			a.CompileLog += "\n"
+		}
+		a.CompileLog += log
+	}
+	if s.def.ActiveArtifactHash == artifactHash {
+		s.def.ActiveVersionHash = ""
+		s.def.ActiveArtifactHash = ""
+		s.def.UpdatedAt = time.Now().UTC()
 	}
 	return nil
 }

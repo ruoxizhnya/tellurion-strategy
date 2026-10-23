@@ -38,11 +38,12 @@ verified-by: 首批实装包布局对表（internal/asset · httpapi · compile 
 
 ```
 cmd/
-  assetservice/      进程入口：Memory Store + httpapi.New + http.Server（127.0.0.1:8085）
+  assetservice/      进程入口：DSN → asset.OpenPG + PG.Migrate → httpapi.New + http.Server（127.0.0.1:8085）；
+                     DSN 为空才用 Memory（日志标注非持久化）
   compiler/          进程入口：读 job JSON → internal/compile.Runner → internal/compilerjob.Run → stdout 回执
 internal/
   asset/             领域核心：模型 / VersionHash / Verify / WasmImports / ImportPolicyFor
-                     / Store 端口 + Memory 实现 / Migrations()（5 条幂等 DDL）/ Service（9 端点语义）
+                     / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
   httpapi/           传输层：标准库 http.ServeMux，9 个公开端点 + 1 个内部登记端点，wire code 映射
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、env 白名单、超时、日志截断）
   compilerjob/       编译作业管线：Job → 编译 → artifact_hash → 内部端点回填
@@ -51,8 +52,12 @@ doc.go               仓级包文档（无代码）
 
 **依赖方向单一**：`cmd/*` → `internal/httpapi` → `internal/asset`；`cmd/compiler` → `internal/compilerjob` → `internal/compile`。
 `internal/asset` 不 import `internal/compile` 与 `internal/compilerjob`（编译是本服务的外部能力，通过 `asset.Compiler` 端口注入）。
+`internal/asset` 的存储依赖只有 `pgx`（PG 实现）；领域模型不出现 `pgx` 类型。
 
-**未落**：PG `Store` 实现与迁移执行入口（当前只有 `Memory`）；build job 持久化；latest TTL 与两级缓存。清单见 `docs/TASKS.md` QT-41 施工记录。
+**事务边界**：`promote` / `deprecate` 的「artifact 状态 + definition 生效指针」在 Store 内单事务提交
+（PG）或单锁内完成（Memory）；HTTP/Service 层不再分两步写。
+
+**未落**：两级缓存与 latest TTL；build job 持久化与 `job_id` 查询；so 导出符号表校验。清单见 `docs/TASKS.md`。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
