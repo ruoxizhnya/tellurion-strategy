@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 链路对表（启动内置登记 / job 持久化 / 两级缓存 + latest TTL / so 符号校验）
+verified-by: G4 链路对表 + G5 编译作业队列（限并发 / 重试 / 终态可检索，状态词表对齐 strategy_build_jobs）
 ---
 
 # Dataflow — tellurion-strategy
@@ -20,9 +20,17 @@ verified-by: G4 链路对表（启动内置登记 / job 持久化 / 两级缓存
       core 引擎  ── 按 artifact_hash 缓存（永不失效）──►  执行（进程内 WASM host）
 
 编译支线（QT-41b，独立进程）：
-  POST .../build ──► cmd/compiler ──┬─ internal/compile.Runner（toolchain，-target=wasm-unknown）
-                                    └─ internal/compilerjob ──► POST /internal/strategies/{id}/artifacts
-                                                              （base64 字节 + hash 自证 + imports 自证）
+  job JSON 批次 ──► cmd/compiler
+                     ├─ internal/compilerjob.Queue（queued → running → succeeded | failed；
+                     │    -workers 限并发、-max-attempts 重试、终态带 error 可检索）
+                     ├─ internal/compile.Runner（toolchain，-target=wasm-unknown）
+                     └─ POST /internal/strategies/{id}/artifacts
+                        （base64 字节 + hash 自证 + imports 自证）
+
+  资产服务的 POST /api/strategies/{id}/build 是另一条入口：先落 strategy_build_jobs
+  （queued）再在**本进程内**调 asset.Compiler。今天 cmd/assetservice 未装配编译器 ⇒
+  该端点恒 503 compile_unavailable；编译进程与 strategy_build_jobs 行的状态回写
+  尚未接线（见 TASKS.md QT-41b G5 余项）。
 ```
 
 ## 2. 关键时序
@@ -32,8 +40,12 @@ verified-by: G4 链路对表（启动内置登记 / job 持久化 / 两级缓存
    已存在同名定义只核对形状、不覆盖；同名不同 carrier/scope/entry = 启动失败。
 1. `POST /api/strategies` 建定义（`carrier` / `abi_version` / `scope` / `capability` / `entry`）
 2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256，域 `tellurion.strategy_version_hash.v1`）→ 登记 `strategy_versions`
-3. `POST .../build` → 先落 `strategy_build_jobs`（queued）再启动编译 → 返回 `job_id` → `GET .../builds/{job_id}` 轮询
-   → `cmd/compiler` 编译 → 内部端点登记 artifact → 写 `strategy_artifacts` + blobs → job 置 succeeded / failed
+3. 资产服务的 `POST .../build` → 先落 `strategy_build_jobs`（queued）→ 在**本进程内**调 `asset.Compiler` →
+   `GET .../builds/{job_id}` 轮询 → 终态写回该行。**现状**：`cmd/assetservice` 未装配编译器 ⇒ 恒 503
+   `compile_unavailable`；资产服务与独立编译进程之间的派发 / 状态回写尚未接线（见 `TASKS.md` QT-41b G5 余项）。
+3b. 独立编译进程：`cmd/compiler -job … [-job …]` → `compilerjob.Queue`（`-workers` 限并发、`-max-attempts` 重试）
+   → 内部端点登记 artifact → 逐作业终态经 stdout / `-report` 输出；状态词表与 `strategy_build_jobs.state`
+   同一套（queued / running / succeeded / failed），作业可带资产服务签发的 `job_id` 作记录主键。
 4. `POST .../versions/{hash}/validate` → `Verify`：storage 分支 / 空字节 / 8 MiB / size 一致 / sha256 / abi 可解析 / memory 上限 / imports 白名单
    → wasm 再验 import section；so 再验导出符号表（`entry` 必须是已定义 GLOBAL/WEAK 符号）→ `built→validated`
 5. `POST .../versions/{hash}/promote` → 写 `active_version_hash` + `active_artifact_hash`（`validated→promoted`）
@@ -59,6 +71,8 @@ verified-by: G4 链路对表（启动内置登记 / job 持久化 / 两级缓存
 | 同版本多工具链且未指定 | 服务替调用方猜 | 409 `ambiguous_artifact` |
 | 字节被篡改 | 跑错字节码 | 下载前 `ArtifactHash` 校验；`X-Artifact-Hash` 与 ETag 同源 |
 | 编译服务回填撒谎 | 登记错 artifact | 内部端点重算 sha256 + 重解析 imports，不符 409 `artifact_invalid` |
+| 编译失败 / 工具链抖动 | 单作业失败（坏 job 不带走整批） | `compilerjob.Queue` 按 `-max-attempts` 重试；确定性失败（形状 / 超限 / hash 不符 / 服务未配）立即终态不重试；终态 `failed` 带 `job_id` + `attempts` + `error` 可检索 |
+| 重试会拖长批次 | 排队作业相互等待 | `-workers` 控并发；批次 ctx 预算按 `ceil(N/workers) × maxAttempts × (timeout+backoff) + 1min` 计算，超时按失败收口 |
 
 ## 4. 不变量（可被测试钉住的）
 

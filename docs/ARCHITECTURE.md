@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 分层对表（PG Store / 两级缓存 / job 持久化 / 内置登记 / so 符号 / 真 TinyGo）
+verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发（compilerjob.Queue）
 ---
 
 # 架构 — tellurion-strategy
@@ -41,7 +41,8 @@ verified-by: G4 分层对表（PG Store / 两级缓存 / job 持久化 / 内置�
 cmd/
   assetservice/      进程入口：DSN → asset.OpenPG + PG.Migrate → httpapi.New + http.Server（127.0.0.1:8085）；
                      DSN 为空才用 Memory（日志标注非持久化）
-  compiler/          进程入口：读 job JSON → internal/compile.Runner → internal/compilerjob.Run → stdout 回执
+  compiler/          进程入口：读一批 job JSON → internal/compilerjob.Queue → internal/compile.Runner
+                     → 内部端点登记 → stdout / -report 输出逐作业终态与失败原因
 internal/
   asset/             领域核心：模型 / VersionHash / Verify / WasmImports / ImportPolicyFor
                      / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
@@ -51,7 +52,8 @@ internal/
   httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 1 个内部登记端点，wire code 映射
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、tinygo 强制 -no-debug、env 白名单、
                      toolchains.lock 二进制 sha256、超时、日志截断）
-  compilerjob/       编译作业管线：Job → 编译 → artifact_hash → 内部端点回填
+  compilerjob/       编译作业管线：Queue（批次排队 / 限并发 / 重试，状态词表与
+                     strategy_build_jobs 同一套，终态可检索）→ 编译 → artifact_hash → 内部端点回填
 doc.go               仓级包文档（无代码）
 ```
 

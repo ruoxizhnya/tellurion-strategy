@@ -10,11 +10,11 @@
 | 路径 | 内容 |
 |---|---|
 | `cmd/assetservice/` | 资产服务进程入口（`127.0.0.1:8085`；DSN 非空走 PG 并在启动时迁移，否则 Memory） |
-| `cmd/compiler/` | 编译服务进程入口（读 job JSON → 编译 → 内部端点登记 artifact） |
+| `cmd/compiler/` | 编译服务进程入口（读一批 job JSON → 队列限并发 / 重试 → 编译 → 内部端点登记 artifact；逐作业终态可检索） |
 | `internal/asset/` | 领域核心：模型 / `VersionHash` / `Verify` / `WasmImports` / Store 端口 + `Memory`/`PG` / DDL / `Service` / 两级缓存 / 内置登记 / so 符号校验 |
 | `internal/httpapi/` | 传输层：标准库 `net/http` 的 10 个公开端点 + 1 个内部登记端点 |
 | `internal/compile/` | Compile 门：toolchain 执行器（`-target=wasm-unknown`、tinygo `-no-debug`、env 白名单、`toolchains.lock`、超时、日志截断） |
-| `internal/compilerjob/` | 编译作业管线：编译 → `artifact_hash` → 内部端点回填 |
+| `internal/compilerjob/` | 编译作业管线：Queue（排队 / 限并发 / 重试，状态与 `strategy_build_jobs` 同词表）→ `artifact_hash` → 内部端点回填 |
 | `docs/` | 本仓文档：台账 / 边界 / 决策 / 归档 —— 从这里进：`docs/README.md` |
 | `AGENTS.md` | 本仓入口（构建、边界、禁止、依赖版本） |
 | `doc.go` | 仓级包文档（无代码） |

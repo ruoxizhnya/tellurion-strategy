@@ -20,8 +20,13 @@ import (
 	"tellurion-strategy/internal/asset"
 )
 
-// Job 是一次编译任务（由调用方从 stdin / 文件 / CI 提供）。
+// Job 是一次编译任务（由调用方从文件 / CI 提供）。
 type Job struct {
+	// JobID 是资产服务 strategy_build_jobs 里的作业 id（可空）。
+	//
+	// 非空时队列用它作记录主键，终态就能按同一个 id 检索；空则由队列自己生成。
+	// 编译进程仍不直连 DB——这里只借用标识，不写那张表。
+	JobID       string `json:"job_id,omitempty"`
 	StrategyID  string `json:"strategy_id"`
 	VersionHash string `json:"version_hash"`
 	Carrier     string `json:"carrier"`

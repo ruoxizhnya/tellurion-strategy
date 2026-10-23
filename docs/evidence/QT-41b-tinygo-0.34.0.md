@@ -144,6 +144,7 @@ Get-FileHash internal/compile/testdata/tinygo/artifact.wasm -Algorithm SHA256
 
 - 本证据只覆盖 **wasm 载体** 的 TinyGo 真实编译；`carrier=so` 的编译工具链未在本批接真镜像
   （SO 侧本批补的是**导出符号表校验**，用标准库 `debug/elf`）。
-- 编译 job 的队列 / 重试 / 并发编排仍不在本批（一次 `cmd/compiler` 进程处理一个 job）。
+- 编译 job 的队列 / 重试 / 并发编排不在**本批**（当时的 `cmd/compiler` 一次只处理一个 job）；
+  2026-10-24 G5 已补（`internal/compilerjob.Queue`），见 `docs/TASKS.md`。
 - 改工具链版本或改编译参数（包括去掉 `-no-debug`）等于改构建配方：必须同时更新
   `toolchains.lock` 与 `toolchain` 标识，否则会与已登记的 `(version_hash, toolchain)` 行冲突（fail-closed）。

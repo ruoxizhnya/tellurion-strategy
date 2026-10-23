@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo）与 QT-41b 真工具链落账
+verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo）与 QT-41b 真工具链落账 + G5 编译作业队列/重试/限并发
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -146,11 +146,47 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 >   现 `compile.Config` 对 `name=tinygo` 强制 `-no-debug`。
 > - ⬜ **编译失败的错误族进 contracts（③-④）**：仍复用本仓 `asset.ErrCompileFailed` 等哨兵；"进 contracts"要 QT-05 之后的
 >   契约发布，属跨仓变更，本批未做。
-> - ⬜ **编译 job 的队列 / 重试 / 并发编排**：未做（当前一次 `cmd/compiler` 进程处理一个 job）。
+> - ✅ **编译 job 的队列 / 重试 / 并发编排**：2026-10-24 G5 已落，见下条施工记录。
 >
 > 工具链锁形态：`internal/compile/lock.go` 的 `toolchains.lock`（名字+版本+二进制 sha256；`cmd/compiler -toolchain-lock` 必填，
 > 无锁不编译、二进制被换即拒）；真镜像灌数时把它的 sha256 写进部署侧锁文件即可。
 > 另：上一批提交（`832764b`）漏了 `go.mod` 的 testify `require`——新 checkout 的 `go test` 必红，本批 tidy 修正并补 AGENTS.md §4 登记。
+
+> **施工记录（G5，2026-10-24）**：派工三条（job 队列/重试/并发 → 错误族消费 → `version_hash` 对齐），**① 已落，②③ 前置未成立、本批不动**。
+>
+> **① ✅ 编译 job 的队列 / 重试 / 限并发**
+> - `internal/compilerjob/queue.go`：`Queue` 批次语义（Submit 全部作业 → `Run` 由 `Workers` 个 worker 取队首执行 → 全部终态后返回）。
+>   状态常量 `StateQueued/Running/Succeeded/Failed` **直接取 `asset.Job*`**——与 `strategy.strategy_build_jobs.state` 的
+>   CHECK 是同一套词表，钉子是 `TestQueueStatesMatchBuildJobTable`（同时读 DDL 断言四个取值，任一侧漂移即红）。
+> - 重试：`MaxAttempts`（≤0 视为 1）+ `Backoff`（可被 ctx 打断）+ `DefaultRetryable` —— `ErrCompileFailed` / `ErrArtifactFetchFailed`
+>   等可重试；作业形状、源码/产物超限、hash 不符、服务未配编译器、服务撒谎**立即终态**，不拿重试掩盖确定性失败。
+> - 失败可检索：`Record(job_id)` / `Records()` 返回快照，终态 `failed` 带 `error`（含 toolchain 与日志片段）、`attempts`、起止时间。
+> - `Job.JobID`（可空）：资产服务 `strategy_build_jobs` 的 job_id 可作记录主键，终态按同一个 id 检索；**编译进程仍不直连 DB**。
+> - `cmd/compiler`：`-job` 改为可重复（一批 job，一个坏 job 不再带走整批）、`-workers`（限并发）、`-max-attempts`、
+>   `-retry-backoff`、`-report <path>`；stdout 输出 `{succeeded, failed, jobs[]}` 报告；有作业终态失败即非零退出。
+>   批次 ctx 预算按 `ceil(N/workers) × maxAttempts × (timeout+backoff) + 1min` 计算（此前固定 `timeout+1min`，多 job 会被提前掐断）。
+>
+> **② ⛔ 错误族消费（未做，前置未成立）**：G0-C2 的 `v0.4.0` 只在契约仓**本地**（`de2770c`，含 `ErrCompileFailed` /
+> `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`），`git ls-remote` 远端最新仍 `v0.3.0`、`go list -m -versions` 只列到 `v0.3.0` ⇒ tag 未发布，
+> `go get ...@v0.4.0` 拉不到。本仓 `go.mod` 仍 pin `v0.1.0`，`internal/asset/errors.go` 仍自持四个编译哨兵。
+> **不是已完成项**：等 v0.4.0 推到远端后，另起一笔做「升 pin → `internal/asset` 改别名/删本地定义 → HTTP 错误码表对表」。
+> **③ ⛔ `version_hash` 对齐（未做，按派工要求不动）**：G0D-C3 + 裁-01 未落定；契约仓 `grep strategy_version_hash`
+> 只有 `provenance.go` 的**输入字段**，没有 `DomainStrategyVersionHash` 域标签。按派工「未裁前不删现有 `DomainStrategyVersionHash`、
+> 也不在契约仓另写一份」，本批 `internal/asset/hash.go` 零改动。
+>
+> **测试（本机实测）**：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；
+> `STRATEGY_TEST_DSN=... go test ./internal/asset -count=1`（PG 集成）全绿，EXIT=0。
+> 新增用例：`internal/compilerjob/queue_test.go`（第一次失败第二次成功 / 超限终态失败 / 不可重试立即失败 /
+> Workers=2 并发上限与提交顺序 / 状态词表对表 / 外部 job_id 与重复拒绝 / Run 后提交拒绝 / 坏作业不入队）、
+> `cmd/compiler/main_test.go`（批量全成功 / 一失败不带走整批且报告可检索 / `-max-attempts 1` 关重试）。
+> **破坏验证**：把 `queue.go` 的 `attempt <= q.opts.MaxAttempts` 改成 `attempt <= 1`（关掉重试）→
+> `go test ./internal/compilerjob` **EXIT=1**（`TestQueue_RetrySecondAttemptSucceeds` / `TestQueue_ExhaustsAttemptsAndFailsTerminal` 红）、
+> `go test ./cmd/compiler` 红（`TestRunKeepsBatchAliveWhenOneJobFails`：attempts 期望 2 实得 1）；逐字节还原后两包复绿（EXIT=0）。
+>
+> **余项（如实登记，不在本单冒充完成）**：队列记录与 `strategy_build_jobs` 的**跨进程状态回写**仍缺 —— 资产服务没有
+> 「编译进程上报 queued/running/终态」的内部端点，`POST /api/strategies/{id}/build` 今天仍要求资产服务进程内有编译器
+> （`Options.Compiler` 在 `cmd/assetservice` 未装配，所以该端点恒 503 `compile_unavailable`）。补这条边要动 `internal/httpapi` +
+> `internal/asset`，超出 G5 ① 的「internal/compilerjob + cmd/compiler」边界，另立单。
 
 
 ---
