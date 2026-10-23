@@ -27,6 +27,9 @@ verified-by: 首批实装链路对表（source→version_hash→build→verify�
 
 ## 2. 关键时序
 
+0. 启动（`cmd/assetservice`）：`PG.Migrate`（幂等 DDL）→ `RegisterBuiltins`（14 个内置策略同步登记，
+   `carrier=builtin`、无 artifact；G 裁决：保留 core 的 init 注册，不做全量迁移）→ 开始监听。
+   已存在同名定义只核对形状、不覆盖；同名不同 carrier/scope/entry = 启动失败。
 1. `POST /api/strategies` 建定义（`carrier` / `abi_version` / `scope` / `capability` / `entry`）
 2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256，域 `tellurion.strategy_version_hash.v1`）→ 登记 `strategy_versions`
 3. `POST .../build` → 返回 `job_id` → `cmd/compiler` 编译 → 内部端点登记 artifact → 写 `strategy_artifacts` + blobs

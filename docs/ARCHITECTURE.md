@@ -46,6 +46,7 @@ internal/
   asset/             领域核心：模型 / VersionHash / Verify / WasmImports / ImportPolicyFor
                      / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
                      / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
+                     / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
   httpapi/           传输层：标准库 http.ServeMux，9 个公开端点 + 1 个内部登记端点，wire code 映射
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、env 白名单、超时、日志截断）
   compilerjob/       编译作业管线：Job → 编译 → artifact_hash → 内部端点回填

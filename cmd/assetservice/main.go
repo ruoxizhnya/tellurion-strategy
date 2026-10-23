@@ -83,6 +83,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// G 裁决：内置策略保留 core 的 init 注册，这里在启动时同步登记定义
+	// （carrier=builtin、无 artifact），消除「引擎自带一套、服务不知道」的
+	// 第二真相源。幂等：已存在只核对形状，不覆盖。
+	registered, err := svc.RegisterBuiltins(ctx)
+	if err != nil {
+		return fmt.Errorf("register builtins: %w", err)
+	}
+	slog.Info("builtin strategies registered", "count", registered)
 	api, err := httpapi.New(svc)
 	if err != nil {
 		return err
