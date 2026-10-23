@@ -103,6 +103,22 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
+// TinyGo 的 DWARF 会嵌入源文件绝对路径：Runner 每次用随机临时目录，缺
+// -no-debug 时同源码两次编译得到不同 artifact_hash。这条规则钉住可复现性。
+func TestConfig_TinyGoRequiresNoDebug(t *testing.T) {
+	cfg := testConfig()
+	cfg.Name = "tinygo"
+	cfg.Version = "0.34.0"
+	cfg.Args = []string{"build", "-target=" + Target, "-o", "{out}", "{src}"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("tinygo without -no-debug must be rejected")
+	}
+	cfg.Args = append([]string{"build", "-no-debug"}, cfg.Args[1:]...)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("tinygo with -no-debug: %v", err)
+	}
+}
+
 func TestNewRunner_DefaultsAndID(t *testing.T) {
 	runner := newRunner(t, testConfig())
 	if got, want := runner.ToolchainID(), "faketc 0.1.0-test"; got != want {

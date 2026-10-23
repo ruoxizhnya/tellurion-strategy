@@ -57,10 +57,27 @@ func (c Config) Validate() error {
 	if !strings.Contains(joined, "{src}") || !strings.Contains(joined, "{out}") {
 		return errors.New("compile: toolchain args must contain {src} and {out} placeholders")
 	}
+	// TinyGo 默认把源文件的绝对路径写进 DWARF：Runner 每次在随机临时目录里落
+	// src，同源码两次编译就会得到不同字节、不同 artifact_hash。`-no-debug`
+	// 是唯一让 tinygo 产物与路径无关的开关（它没有 -trimpath）——缺了它，
+	// 「同源码同工具链可复现」这条验收直接不成立。
+	if c.Name == "tinygo" && !hasArg(c.Args, "-no-debug") {
+		return errors.New("compile: tinygo args must include -no-debug (debug info embeds the source path and breaks artifact reproducibility)")
+	}
 	if c.MaxBytes < 0 {
 		return errors.New("compile: max bytes must be non-negative")
 	}
 	return nil
+}
+
+// hasArg 判断参数里是否有**恰好等于** name 的一项（不是子串匹配）。
+func hasArg(args []string, name string) bool {
+	for _, a := range args {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }
 
 // hasPinnedTarget 要求参数里存在**恰好等于** `-target=wasm-unknown` 的一项，

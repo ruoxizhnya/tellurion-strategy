@@ -49,7 +49,8 @@ internal/
                      / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
                      / elf.go（carrier=so 的导出符号表校验：entry 必须是已定义 GLOBAL/WEAK 符号）
   httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 1 个内部登记端点，wire code 映射
-  compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、env 白名单、超时、日志截断）
+  compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、tinygo 强制 -no-debug、env 白名单、
+                     toolchains.lock 二进制 sha256、超时、日志截断）
   compilerjob/       编译作业管线：Job → 编译 → artifact_hash → 内部端点回填
 doc.go               仓级包文档（无代码）
 ```
@@ -91,6 +92,7 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
 
 - [`adr/0001-资产服务不等于运行时.md`](adr/0001-资产服务不等于运行时.md)
 - [`adr/0002-artifact-主键与生效字节的裁决.md`](adr/0002-artifact-主键与生效字节的裁决.md)（偏差 #1 七列 + artifact 主键 + 生效字节指针）
+- [`adr/0003-存储缓存作业与产物可复现性.md`](adr/0003-存储缓存作业与产物可复现性.md)（PG / 两级缓存 / job 落库 / so 符号 / TinyGo `-no-debug`）
 
 ## 7. 非目标（明确不做）
 

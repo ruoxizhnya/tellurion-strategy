@@ -1,0 +1,9 @@
+{
+  "toolchains": [
+    {
+      "name": "tinygo",
+      "version": "0.34.0",
+      "sha256": "14408311f6cd58c61d406776417cb8dd07728aa4f00ededfbdd1a544405d2394"
+    }
+  ]
+}

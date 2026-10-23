@@ -33,6 +33,7 @@ verified-by: 功能边界固化（三份契约：db / api / dataflow）
 | [`dataflow.md`](dataflow.md) | 数据流向、时序、fail-closed 点、不变量 | 改链路的人 |
 | [`TASKS.md`](TASKS.md) | 可执行任务（六字段） | 每个人 |
 | [`adr/`](adr/README.md) | 架构决策（只增不删） | 提变更的人 |
+| [`evidence/`](evidence/) | 实测证据（真工具链编译、固定 artifact_hash、复现命令） | 做验证的人 |
 | [`odr/`](odr/README.md) | 运行 / 治理决策（删档、审计、迁移、工具） | 做事的人 |
 | [`archive/`](archive/README.md) | 已完成任务与历史文档 | 收尾的人 |
 
