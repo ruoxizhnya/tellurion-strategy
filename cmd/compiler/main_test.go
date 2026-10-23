@@ -34,7 +34,6 @@ func TestRunRejectsUnpinnedVersion(t *testing.T) {
 	lockPath := filepath.Join(dir, "toolchains.lock")
 	sum := sha256.Sum256([]byte("x"))
 	lockJSON := `{"toolchains":[{"name":"tinygo","version":"0.33.0","sha256":"` + hex.EncodeToString(sum[:]) + `"}]}`
-	lockJSON = `{"toolchains":[{"name":"tinygo","version":"0.33.0","sha256":"` + hex.EncodeToString(sum[:]) + `"}]}`
 	require.NoError(t, os.WriteFile(lockPath, []byte(lockJSON), 0o600))
 
 	err := run([]string{

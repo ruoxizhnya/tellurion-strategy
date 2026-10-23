@@ -70,6 +70,9 @@ func (s *Service) RegisterBuiltins(ctx context.Context) (int, error) {
 		if err := def.Validate(); err != nil {
 			return registered, fmt.Errorf("builtin %s: %w", def.ID, err)
 		}
+		now := s.now()
+		def.CreatedAt = now
+		def.UpdatedAt = now
 		err := s.store.CreateDefinition(ctx, def)
 		if err == nil {
 			registered++

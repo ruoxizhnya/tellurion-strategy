@@ -48,7 +48,7 @@ func run(args []string) error {
 	timeout := fs.Duration("timeout", 5*time.Minute, "compile timeout")
 	var toolchainArgs repeatableFlag
 	var envAllow repeatableFlag
-	fs.Var(&toolchainArgs, "arg", "toolchain argument template (repeatable; must include {src}, {out} and -target=wasm-unknown)")
+	fs.Var(&toolchainArgs, "arg", "toolchain argument template (repeatable; must include {src}, {out} and -target=wasm-unknown; tinygo also requires -no-debug)")
 	fs.Var(&envAllow, "env", "environment variable to pass through to the toolchain (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err

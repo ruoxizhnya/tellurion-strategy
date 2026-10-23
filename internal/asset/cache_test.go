@@ -50,6 +50,18 @@ func TestCache_MemoryLRU(t *testing.T) {
 	}
 }
 
+// 单条超过 L1 容量时不许驻留内存（磁盘层仍可命中）。
+func TestCache_MemoryCapRejectsOversizeEntry(t *testing.T) {
+	c := mustCache(t, CacheConfig{MemoryBytes: 3})
+	raw := []byte("four")
+	if err := c.Put(ArtifactHash(raw), raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.Get(ArtifactHash(raw)); ok {
+		t.Fatal("an entry larger than the L1 cap must not be cached in memory")
+	}
+}
+
 func TestCache_DiskTierSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	raw := wasmWithImports("env.get_bar2")

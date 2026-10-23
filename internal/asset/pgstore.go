@@ -172,6 +172,10 @@ func (p *PG) SaveVersion(ctx context.Context, v Version) (Version, error) {
 
 // GetVersion 返回版本行。
 func (p *PG) GetVersion(ctx context.Context, id, versionHash string) (Version, error) {
+	return p.versionRow(ctx, p.pool, id, versionHash)
+}
+
+func (p *PG) versionRow(ctx context.Context, q querier, id, versionHash string) (Version, error) {
 	if err := ctx.Err(); err != nil {
 		return Version{}, err
 	}
@@ -180,7 +184,7 @@ func (p *PG) GetVersion(ctx context.Context, id, versionHash string) (Version, e
 		carrier string
 		scope   string
 	)
-	err := p.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT strategy_id, trim(version_hash), source, carrier, abi_version, scope, entry, created_at
 		  FROM strategy.strategy_versions WHERE strategy_id = $1 AND version_hash = $2`,
 		id, versionHash).
@@ -257,7 +261,7 @@ func (p *PG) SaveArtifact(ctx context.Context, a Artifact) (Artifact, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := p.GetVersion(ctx, a.StrategyID, a.VersionHash); err != nil {
+	if _, err := p.versionRow(ctx, tx, a.StrategyID, a.VersionHash); err != nil {
 		return Artifact{}, err
 	}
 

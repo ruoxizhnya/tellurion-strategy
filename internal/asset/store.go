@@ -336,7 +336,7 @@ func (m *Memory) SaveJob(ctx context.Context, job BuildJob) error {
 	if _, ok := m.jobs[job.ID]; ok {
 		return fmt.Errorf("%w: job %s", ErrArtifactConflict, job.ID)
 	}
-	m.jobs[job.ID] = job
+	m.jobs[job.ID] = cloneJob(job)
 	return nil
 }
 
@@ -350,7 +350,7 @@ func (m *Memory) UpdateJob(ctx context.Context, job BuildJob) error {
 	if _, ok := m.jobs[job.ID]; !ok {
 		return fmt.Errorf("%w: %s", ErrJobNotFound, job.ID)
 	}
-	m.jobs[job.ID] = job
+	m.jobs[job.ID] = cloneJob(job)
 	return nil
 }
 
@@ -365,7 +365,15 @@ func (m *Memory) GetJob(ctx context.Context, id string) (BuildJob, error) {
 	if !ok {
 		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, id)
 	}
-	return job, nil
+	return cloneJob(job), nil
+}
+
+func cloneJob(job BuildJob) BuildJob {
+	if job.FinishedAt != nil {
+		finished := *job.FinishedAt
+		job.FinishedAt = &finished
+	}
+	return job
 }
 
 // Promote 在单锁内完成 validated → promoted 与生效指针写入。

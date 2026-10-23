@@ -230,6 +230,15 @@ func (c *Cache) putMemory(hash string, bytes []byte) {
 	cp := append([]byte(nil), bytes...)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// 单条就超过 L1 容量：不驻留内存（磁盘仍可命中），否则「容量上限」形同虚设。
+	if int64(len(cp)) > c.memoryMax {
+		if el, ok := c.entries[hash]; ok {
+			c.memory -= int64(len(el.Value.(*memoryEntry).bytes))
+			c.lru.Remove(el)
+			delete(c.entries, hash)
+		}
+		return
+	}
 	if el, ok := c.entries[hash]; ok {
 		entry := el.Value.(*memoryEntry)
 		c.memory += int64(len(cp)) - int64(len(entry.bytes))
@@ -240,7 +249,7 @@ func (c *Cache) putMemory(hash string, bytes []byte) {
 		c.entries[hash] = el
 		c.memory += int64(len(cp))
 	}
-	for c.memory > c.memoryMax && c.lru.Len() > 1 {
+	for c.memory > c.memoryMax && c.lru.Len() > 0 {
 		back := c.lru.Back()
 		if back == nil {
 			break
