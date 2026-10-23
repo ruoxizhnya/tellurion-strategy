@@ -79,7 +79,7 @@ func main() {}
 实测回执：
 
 ```json
-{"artifact_hash":"fd0ecc264521683eaa7ba0819cb9d41a187e54fc5bcfb2332fe0e9aa1f9f7aea","status":"built","strategy_id":"st_523143f9bd58a139131d071c589c0a79","toolchain":"tinygo 0.34.0","version_hash":"4d7ee2e590fd52859ed390559b9875578e2363e63e53c03e53f440605de125db"}
+{"artifact_hash":"fd0ecc264521683eaa7ba0819cb9d41a187e54fc5bcfb2332fe0e9aa1f9f7aea","status":"built","strategy_id":"st_b324a1ff08c0a5208b4c52f7902ee3a3","toolchain":"tinygo 0.34.0","version_hash":"cd488c31c04c5c09085a784ce6e77e57e03143c1a5f0d12eb18f8aa5fc815738"}
 ```
 
 随后：
@@ -89,8 +89,16 @@ func main() {}
 | `validate` | `validated` |
 | `promote` | `promoted`，`artifact_hash=fd0ecc…f7aea` |
 | `resolve?ref=latest` | `artifact_hash=fd0ecc…f7aea` |
-| `resolve?ref=<id>@<version_hash>` | `version_hash=4d7ee2…25db`，**回写** `artifact_hash=fd0ecc…f7aea` |
+| `resolve?ref=<id>@<version_hash>` | `version_hash=cd488c31…5738`，**回写** `artifact_hash=fd0ecc…f7aea` |
 | 下载 artifact | 270 字节，sha256 = `fd0ecc…f7aea`（与登记 hash 逐字节一致） |
+
+**锁门实测**：把锁文件里的 sha256 改成全 0 后重跑，编译进程在启动阶段就拒绝（一个 job 都不跑）：
+
+```
+compiler: compile: toolchain binary does not match the pinned sha256:
+tinygo 0.34.0 binary hashes to 14408311f6cd58c61d406776417cb8dd07728aa4f00ededfbdd1a544405d2394,
+lock says 0000000000000000000000000000000000000000000000000000000000000000
+```
 
 > 注：`version_hash` 含 `strategy_id`（设计 §2 的六输入之一），因此不同的策略 id 即使源码相同也会得到不同的
 > `version_hash`；`artifact_hash` 只由字节决定，与 id 无关。

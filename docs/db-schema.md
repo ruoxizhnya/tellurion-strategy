@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: 两处主键/列裁决落地（docs/adr/0002）+ DDL 与代码逐列对表（internal/asset/ddl.go）
+last-verified: 2026-10-24
+verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs 建表
 ---
 
 # DB Schema — tellurion-strategy

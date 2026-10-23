@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: 首批实装链路对表（source→version_hash→build→verify→promote→resolve→artifact 下载）
+last-verified: 2026-10-24
+verified-by: G4 链路对表（启动内置登记 / job 持久化 / 两级缓存 + latest TTL / so 符号校验）
 ---
 
 # Dataflow — tellurion-strategy

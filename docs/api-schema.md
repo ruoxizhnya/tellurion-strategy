@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + internal/compile + internal/compilerjob）逐端对表
+last-verified: 2026-10-24
+verified-by: G4 落地——10+1 端点对表（新增 job 查询、job_not_found、缓存/持久化现状）
 ---
 
 # API Schema — tellurion-strategy
@@ -148,7 +148,7 @@ QT-41b ③-⑤ 那句「Resolve/Fetch/Verify/Mount 分界」漏了 Compile 且�
 |---|---|---|---|
 | Resolve | `strategy_ref` → 元数据（含 `artifact_hash`） | `ErrStrategyNotFound` / `ErrNoActiveVersion` → **代码里 0 命中**；最接近的实物是 `Registry.Get(name)` 的 `fmt.Errorf("strategy not found: %s")`（`pkg/strategy/registry.go:51-57`），**按名字找、不是按 hash** | 资产服务 |
 | Fetch | `artifact_hash` → 字节 | `ErrArtifactFetchFailed` / `ErrArtifactTooLarge` → 0 命中；`storage='url'` 分支已裁**不实现**（A 裁 BYTEA ≤ 8 MiB，超限 fail-loud） | 资产服务 |
-| Verify | 字节 → 校验结论 | `ErrArtifactHashMismatch` → 0 命中；`ErrImportNotAllowed` → 实物是 `contracts.ErrImportNotWhitelisted`（`abi.go:650` 一族 17 个 `Err*` 里语义最贴的），**名字不同，对表时以既有名为准，不要再造第二个** | 资产服务（编译无关的 abi 结构校验） |
+| Verify | 字节 → 校验结论 | `ErrArtifactHashMismatch` → 0 命中；`ErrImportNotAllowed` → 实物是 `contracts.ErrImportNotWhitelisted`（`abi.go:650` 一族 17 个 `Err*` 里语义最贴的），**名字不同，对表时以既有名为准，不要再造第二个**；2026-10-24 补：`carrier=so` 校验导出符号表（`entry` 必须是已定义 GLOBAL/WEAK FUNC/NOTYPE） | 资产服务（编译无关的 abi 结构校验） |
 | Compile | 源码 → 目标产物（`-target=wasm-unknown`，toolchain 版本固定，env-only 白名单） | `ErrCompileFailed` → 0 命中；`staticcheck.CheckOrError` 返回匿名 error，**不可检索、不可当契约错误** | **本仓 `cmd/compiler` 独立进程**（D 已裁，2026-10-21；不放 agent 仓、不建第 13 仓，`tellurion-docs:docs/adr/adr-035-repo-inventory-and-naming.md` 附录 D） |
 | Mount | 产物 → host 可调用实例 | `ErrMountFailed` → 0 命中；实物：`wasm.ValidateLoadedArtifact(inst, family)`（`abi_check.go:292`）+ `ErrAbiVersionUnknown`/`ErrAbiVersionMismatch`（`abi.go:650` 族）+ sandbox 的 `ErrTimeout`/`ErrMemoryLimitExceeded`/`ErrModuleNotFound`/`ErrFunctionNotExported`/`ErrMemoryOutOfBounds`（`sandbox.go:56-72`）。**挂载目标存在（`SignalProvider`，`signal_provider.go:41-45`），但没有任何东西往里挂** | core 进程内（WASM host 永不做成服务） |
 

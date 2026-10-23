@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: 首批实装包布局对表（internal/asset · httpapi · compile · compilerjob · cmd/assetservice · cmd/compiler）
+last-verified: 2026-10-24
+verified-by: G4 分层对表（PG Store / 两级缓存 / job 持久化 / 内置登记 / so 符号 / 真 TinyGo）
 ---
 
 # 架构 — tellurion-strategy
@@ -76,16 +76,17 @@ doc.go               仓级包文档（无代码）
 ## 5. 依赖方向
 
 ```
-contracts（strategy_ref / ArtifactHash / HostABIContracts）  +  kit（logging/http/db，尚未启用）
+contracts（strategy_ref / ArtifactHash / HostABIContracts）  +  pgx（PG Store）
         ↑
 tellurion-strategy  ──(HTTP 读)──►  core 引擎
         │
-        └── 依赖编译工具链（TinyGo / go）—— 只在 build 侧（cmd/compiler）
+        └── 依赖编译工具链（tinygo 0.34.0 镜像 / gcc）—— 只在 build 侧（cmd/compiler）
 ```
 
 - **contracts `v0.1.0` 是已发的 tag**（不是伪版本）。`engine` 子包（package 名仍是 `contracts`）提供 `StrategyRef` /
   `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / 两个 abi 哨兵 —— 本仓**不复制**这些符号。
-- **不依赖 `tellurion-kit`**：当前实现用标准库 `net/http` + 内存 Store，没有日志/存储连接需求；引入前要先在 `AGENTS.md` §4 登记。
+- **`pgx/v5` 只出现在存储实现**（`internal/asset/pgstore.go`）；领域模型与 HTTP 层不出现 `pgx` 类型。
+- **不依赖 `tellurion-kit`**：HTTP / 日志用标准库（`net/http`、`log/slog`）；引入 kit 前要先在 `AGENTS.md` §4 登记。
 - 禁止 `replace` 指向仓外路径、禁止提交 `go.work` —— 单仓必须能独立构建。
 
 ## 6. 关键决策

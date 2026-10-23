@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-23
-verified-by: QT-41/QT-41b 首批实装施工记录落账（internal/asset + httpapi + compile + compilerjob + cmd）与未落项逐条登记
+last-verified: 2026-10-24
+verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo）与 QT-41b 真工具链落账
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -17,7 +17,7 @@ verified-by: QT-41/QT-41b 首批实装施工记录落账（internal/asset + http
 
 > **约定变更（2026-10-21）**：原「占位仓不写正式六字段任务单」作废——X 线任务单已展开为本仓正式任务（见下）。M5/M8 开工前置不变；实现仍未开工，开工前仍须过前置两条。
 
-### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地；剩余项见施工记录）
+### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ✅（2026-10-24 G4 收口；余项为非目标/跨仓指针）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
@@ -57,19 +57,58 @@ verified-by: QT-41/QT-41b 首批实装施工记录落账（internal/asset + http
 > `UNIQUE(strategy_id, version_hash, toolchain)`；偏差 #5 → 复用 contracts 既有哨兵，不另造 9 个；偏差 #6 → 补齐领域 wire code
 > 并删掉本服务不产生的 `abi_mismatch` / `job_not_found`。
 >
-> **未落项（不得当现状描述）**：
-> 1. **PG `Store` 实现 + 迁移执行入口**：当前只有 `Memory`；`asset.Migrations()` 已就绪但无启动时执行器（无 PgStore、无连接装配）。
-> 2. **build job 持久化**：job 只在进程内 registry，重启丢失；也无 `job_id` 查询端点。
-> 3. **E/F 裁决未实现**：内存 LRU + 本地磁盘内容寻址二级缓存、`latest` TTL 300s 均未落地（当前每次都回源）。
-> 4. **G 裁决未实现**：14/15 个内置策略登记为 `carrier=builtin` 未做（现状内置策略仍在 core）。
-> 5. **`storage='url'` 分支**：列保留、代码里显式 fail-closed 返回 `storage_unsupported`，未实现对象存储。
-> 6. **so 载体符号表校验**：`carrier=so` 目前只做体积/hash，未校验导出符号。
-> 7. **core 侧 Mount 门**：本仓不负责装载；五道门的 Mount 仍在 core 的 WASM host。
-> 8. **真 toolchain 镜像**：本机无 tinygo/wat2wasm，`internal/compile` 只用假工具链验证了执行器契约（`go build` 出的替身）。
-> 9. **`version_hash` 域标签不在 contracts**：本仓自定义字符串，见 `db-schema.md` §6 风险。
-> 10. **`Promote` 两步非原子**：更新 definition 指针与 artifact 状态分两次写；`Memory` 单锁内无问题，接 PG 后需事务。
+> **施工记录（G4，2026-10-24）**：10 条未落项逐条处置（✅ 已落 / ➖ 非本单目标或跨仓）：
+>
+> 1. ✅ **PG `Store` + 启动迁移执行**：`internal/asset/pgstore.go` 实现全部 Store 写读；`cmd/assetservice`
+>    DSN 非空时 `OpenPG` → `PG.Migrate(ctx)`（幂等 DDL）再监听；`CHAR(64)` 读回统一 `trim`（PG 会补空格，不 trim 会破坏内容寻址比较）。
+> 2. ✅ **build job 持久化 + `job_id` 查询**：新增 `strategy.strategy_build_jobs`（第 6 条 DDL）；
+>    `POST .../build` 先落 queued 再起 goroutine；`GET /api/strategies/{id}/builds/{job_id}` 查询，
+>    路径 id 必须与作业归属一致，否则 404 `job_not_found`（不跨策略枚举）。
+> 3. ✅ **E/F 缓存裁决**：artifact 字节 L1 内存 LRU + L2 本地磁盘内容寻址（`<dir>/<hash[:2]>/<hash>`，
+>    读出重算 sha256、不符即删；按容量驱逐，artifact **永不 TTL**）；`latest` 结果 TTL **300s**，
+>    `promote` / `deprecate` 成功后同进程主动失效（不引 webhook / msgbus）。
+> 4. ✅ **G：14 个内置策略登记**：`internal/asset/builtin.go`；启动时同步登记 `carrier=builtin`、无 artifact、
+>    `scope=market`、`entry=策略名`（依据 core `SignalGenerator` 的整张 bars map 与设计 §4「entry 指向二进制内符号」）。
+>    已存在同名定义只核对形状、不覆盖；同名不同 carrier/scope/entry = 启动失败。`expression_template` 属 `carrier=dsl`，不在此 14 个内。
+> 5. ➖ **`storage='url'`**：仍只保留列、代码 fail-closed `storage_unsupported`；A 裁决明确不实现（非目标，不是欠账）。
+> 6. ✅ **so 导出符号表校验**：`internal/asset/elf.go`（标准库 `debug/elf`）：要求 ET_DYN，`entry` 在 `.dynsym`
+>    （无则 `.symtab`）里已定义，绑定 GLOBAL/WEAK，类型 FUNC/NOTYPE。`Verify` 增加 `entry` 入参，所有调用点从版本行取。
+> 7. ➖ **core 侧 Mount 门**：不在本仓（ADR-027 边界；引擎进程内的 WASM host）。
+> 8. ✅ **真 TinyGo 镜像**：`internal/compile/toolchains.lock` 灌官方 `tinygo/tinygo:0.34.0` 的二进制 sha256；
+>    真镜像编译两次逐字节一致，`artifact_hash` 固定；证据 `docs/evidence/QT-41b-tinygo-0.34.0.md`。
+>    **实测逮到一个可复现性缺陷并修掉**：TinyGo 默认把源文件绝对路径写进 DWARF，Runner 的随机临时目录会让同源码产出两个
+>    hash；`compile.Config` 现对 `name=tinygo` 强制要求精确参数 `-no-debug`。
+> 9. ➖ **`version_hash` 域标签迁 contracts**：按派工要求等 G1 第二批发版，本批不动；仍由本仓定义
+>    `tellurion.strategy_version_hash.v1`（风险见 `db-schema.md` §6）。
+> 10. ✅ **`Promote` 两步写改事务**：`Store.Promote` / `Store.Deprecate` 把「artifact 状态 + definition 生效指针」
+>     收进单事务（PG）或单锁（Memory）；Service 不再分两步写。
+>
+> **验收证据**：
+> - 服务停机后已缓存 hash 照跑且结果一致：`TestService_CachedArtifactServedAfterRestartWithBlobStoreOffline`
+>   （新 Cache 实例 = 进程重启；底层 `GetArtifact` 故意失败，仍从 L2 返回逐字节相同的 artifact）。
+> - 同源码两工具链 → 两 artifact 可分别追溯：`TestMemoryStore_ArtifactsKeyedByArtifactHash` /
+>   `TestPG_ArtifactsKeyedByArtifactHash`（主键 `(strategy_id, artifact_hash)` + `UNIQUE(version, toolchain)`）。
+> - `id@version_hash` 解析回写实际 `artifact_hash`：`TestAPI_WasmLifecycle` 与真镜像 E2E
+>   （`st_b324a1ff…` / version `cd488c31…` → `artifact_hash=fd0ecc26…`，下载 270 字节同 hash）。
+>
+> **破坏验证（改坏应红，逐字节还原后应绿；本机实跑）**：
+> - Promote 改为先 commit 再写 active → `TestPG_StatusMachineAndTransactionalPromote` 红（"status = promoted after a failed promote"）；还原后绿。
+> - promote 不失效 latest → `TestService_LatestCacheTTLAndPromoteInvalidation` 红；还原后绿。
+> - 内置登记去掉形状核对 → `TestService_RegisterBuiltinsRejectsShapeConflict` 红；还原后绿。
+> - Verify 跳过 so 符号表 / job 端点不校验归属 → 对应测试红；还原后绿。
+> - 去掉 `-no-debug` 必填规则 → `TestConfig_TinyGoRequiresNoDebug` 红；还原后绿。
+>
+> **测试（本机实测）**：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；
+> `STRATEGY_TEST_DSN=... go test ./internal/asset -count=1`（PG 集成）全绿；
+> `STRATEGY_TINYGO_IMAGE=tinygo/tinygo:0.34.0 go test ./internal/compile -run TestCompile_RealTinyGoImage -v` 绿。
+>
+> **文档同步**：`db-schema.md`（第 5 张表 + 迁移执行）、`api-schema.md`（job 端点 + `job_not_found` + 缓存落地）、
+> `dataflow.md`（启动登记 / job 持久化 / 缓存 / so 符号）、`ARCHITECTURE.md` + `adr/0003`（存储/缓存/作业/可复现性）。
+>
+> **余项（不属于本单验收，未做也不冒充已完成）**：`storage='url'` 分支、`carrier=external` 的 hash 语义单独立文、
+> core 侧 Mount 门、`version_hash` 域标签迁 contracts（等 G1 第二批发版）。
 
-### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地）
+### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地；2026-10-24 真 TinyGo 0.34.0 已接）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
@@ -100,9 +139,17 @@ verified-by: QT-41/QT-41b 首批实装施工记录落账（internal/asset + http
 >   无产物、超限、日志截断、`-target` near-miss）、`internal/compilerjob/compilerjob_test.go`（真 Service + httptest 的
 >   成功/失败/服务撒谎/不可达）。
 >
-> **未落项**：真 TinyGo 镜像（本机无 tinygo/wat2wasm，仅用替身验证执行器契约）。**工具链版本锁定已于 2026-10-23 落可执行形态**——`internal/compile/lock.go` 的 `toolchains.lock`（名字+版本+二进制 sha256；`cmd/compiler -toolchain-lock` 必填，无锁不编译、二进制被换即拒），真镜像灌数时把它的 sha256 写进部署侧锁文件即可；编译失败的错误族仍复用
-> 本仓 `asset.ErrCompileFailed` 等哨兵，**未进 contracts**（③-④ 的"进 contracts"要 QT-05 之后的契约发布，属于跨仓变更）；
-> 编译 job 的队列/重试/并发编排未做（当前一次 `cmd/compiler` 进程处理一个 job）。
+> **未落项（2026-10-24 更新）**：
+> - ✅ **真 TinyGo 镜像**：官方 `tinygo/tinygo:0.34.0`（二进制 sha256 `1440831…`）已接；`internal/compile/toolchains.lock`
+>   灌真实值；真镜像编译两次逐字节一致，`artifact_hash=fd0ecc26…`；证据 `docs/evidence/QT-41b-tinygo-0.34.0.md`。
+>   同时修掉一个可复现性缺陷：TinyGo 默认把源文件绝对路径写进 DWARF，Runner 的随机临时目录会让同源码产出两个 hash；
+>   现 `compile.Config` 对 `name=tinygo` 强制 `-no-debug`。
+> - ⬜ **编译失败的错误族进 contracts（③-④）**：仍复用本仓 `asset.ErrCompileFailed` 等哨兵；"进 contracts"要 QT-05 之后的
+>   契约发布，属跨仓变更，本批未做。
+> - ⬜ **编译 job 的队列 / 重试 / 并发编排**：未做（当前一次 `cmd/compiler` 进程处理一个 job）。
+>
+> 工具链锁形态：`internal/compile/lock.go` 的 `toolchains.lock`（名字+版本+二进制 sha256；`cmd/compiler -toolchain-lock` 必填，
+> 无锁不编译、二进制被换即拒）；真镜像灌数时把它的 sha256 写进部署侧锁文件即可。
 > 另：上一批提交（`832764b`）漏了 `go.mod` 的 testify `require`——新 checkout 的 `go test` 必红，本批 tidy 修正并补 AGENTS.md §4 登记。
 
 
