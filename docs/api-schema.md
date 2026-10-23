@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 落地——10+1 端点对表（新增 job 查询、job_not_found、缓存/持久化现状）
+verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓存持久化）+ G5 ② 编译·资产哨兵切 contracts v0.4.0 别名（wire code 不变）
 ---
 
 # API Schema — tellurion-strategy
@@ -85,6 +85,10 @@ verified-by: G4 落地——10+1 端点对表（新增 job 查询、job_not_foun
 > （`tellurion-contracts:engine` 的 `ErrAbiVersionMismatch`）。资产服务只回答「这个 abi_version 是否可解析、是否与字节自证相符」。
 > **`job_not_found` 在对外面**：build 返回的 `job_id` 落 `strategy.strategy_build_jobs`，用
 > `GET /api/strategies/{id}/builds/{job_id}` 查询（2026-10-24 落地；此前只在进程内可查）。
+> **编译 / 资产四条哨兵自 contracts `v0.4.0` 起由契约仓定义**（`engine/execution_errors.go`：`ErrCompileFailed` /
+> `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`），本仓 `internal/asset/errors.go` 只留**同名别名**，
+> 上表 wire code 与 HTTP 状态不变。跨仓消费方（agent 生成闭环 / core 取 artifact / 编排终态）按契约哨兵 `errors.Is`
+> 判定，不必 import 本仓实现包；判定语义是 `%w` 保链，`err.Error()` 的措辞不属于契约。
 
 ## 3. 幂等性与重试
 

@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo）与 QT-41b 真工具链落账 + G5 编译作业队列/重试/限并发
+verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo）与 QT-41b 真工具链落账 + G5 编译作业队列/重试/限并发 + 错误族切 contracts v0.4.0 别名
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -144,8 +144,8 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 >   灌真实值；真镜像编译两次逐字节一致，`artifact_hash=fd0ecc26…`；证据 `docs/evidence/QT-41b-tinygo-0.34.0.md`。
 >   同时修掉一个可复现性缺陷：TinyGo 默认把源文件绝对路径写进 DWARF，Runner 的随机临时目录会让同源码产出两个 hash；
 >   现 `compile.Config` 对 `name=tinygo` 强制 `-no-debug`。
-> - ⬜ **编译失败的错误族进 contracts（③-④）**：仍复用本仓 `asset.ErrCompileFailed` 等哨兵；"进 contracts"要 QT-05 之后的
->   契约发布，属跨仓变更，本批未做。
+> - ✅ **编译失败的错误族进 contracts（③-④）**：contracts `v0.4.0`（2026-10-24）已发布四个哨兵；本仓同日升 pin 并改为同名别名，
+>   见下面 G5 ② 施工记录。
 > - ✅ **编译 job 的队列 / 重试 / 并发编排**：2026-10-24 G5 已落，见下条施工记录。
 >
 > 工具链锁形态：`internal/compile/lock.go` 的 `toolchains.lock`（名字+版本+二进制 sha256；`cmd/compiler -toolchain-lock` 必填，
@@ -166,10 +166,13 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 >   `-retry-backoff`、`-report <path>`；stdout 输出 `{succeeded, failed, jobs[]}` 报告；有作业终态失败即非零退出。
 >   批次 ctx 预算按 `ceil(N/workers) × maxAttempts × (timeout+backoff) + 1min` 计算（此前固定 `timeout+1min`，多 job 会被提前掐断）。
 >
-> **② ⛔ 错误族消费（未做，前置未成立）**：G0-C2 的 `v0.4.0` 只在契约仓**本地**（`de2770c`，含 `ErrCompileFailed` /
-> `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`），`git ls-remote` 远端最新仍 `v0.3.0`、`go list -m -versions` 只列到 `v0.3.0` ⇒ tag 未发布，
-> `go get ...@v0.4.0` 拉不到。本仓 `go.mod` 仍 pin `v0.1.0`，`internal/asset/errors.go` 仍自持四个编译哨兵。
-> **不是已完成项**：等 v0.4.0 推到远端后，另起一笔做「升 pin → `internal/asset` 改别名/删本地定义 → HTTP 错误码表对表」。
+> **② ✅ 错误族消费（同日补落：v0.4.0 推上远端后立即做）**：G0-C2 的 contracts `v0.4.0`（远端 tag `11a9683`）含
+> `ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`。
+> `go get ...@v0.4.0` + `go mod tidy` 后，`internal/asset/errors.go` 删掉四条本地 `errors.New`，改为**同名别名**
+> （文件末尾逐条写映射：契约哨兵 ⇄ 本仓别名 ⇄ HTTP wire code）；`internal/asset/errors_test.go` 的
+> `TestCompileErrorFamilyIsContractAlias` 钉住「同一个值 + 文案一致 + `%w` 包装后可用别名判定」。
+> **HTTP wire code 零变化**（`compile_failed` / `compile_unavailable` / `payload_too_large` 原样）；`docs/api-schema.md` §2 补了哨兵来源。
+> 所有调用点（`internal/compile` 的包装、`httpapi.classify`、`compilerjob.DefaultRetryable`）仍写 `asset.Err*`，行为不变。
 > **③ ⛔ `version_hash` 对齐（未做，按派工要求不动）**：G0D-C3 + 裁-01 未落定；契约仓 `grep strategy_version_hash`
 > 只有 `provenance.go` 的**输入字段**，没有 `DomainStrategyVersionHash` 域标签。按派工「未裁前不删现有 `DomainStrategyVersionHash`、
 > 也不在契约仓另写一份」，本批 `internal/asset/hash.go` 零改动。
@@ -178,10 +181,13 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 > `STRATEGY_TEST_DSN=... go test ./internal/asset -count=1`（PG 集成）全绿，EXIT=0。
 > 新增用例：`internal/compilerjob/queue_test.go`（第一次失败第二次成功 / 超限终态失败 / 不可重试立即失败 /
 > Workers=2 并发上限与提交顺序 / 状态词表对表 / 外部 job_id 与重复拒绝 / Run 后提交拒绝 / 坏作业不入队）、
-> `cmd/compiler/main_test.go`（批量全成功 / 一失败不带走整批且报告可检索 / `-max-attempts 1` 关重试）。
+> `cmd/compiler/main_test.go`（批量全成功 / 一失败不带走整批且报告可检索 / `-max-attempts 1` 关重试）、
+> `internal/asset/errors_test.go`（四条编译·资产哨兵是契约别名，不是第二份定义）。
 > **破坏验证**：把 `queue.go` 的 `attempt <= q.opts.MaxAttempts` 改成 `attempt <= 1`（关掉重试）→
 > `go test ./internal/compilerjob` **EXIT=1**（`TestQueue_RetrySecondAttemptSucceeds` / `TestQueue_ExhaustsAttemptsAndFailsTerminal` 红）、
 > `go test ./cmd/compiler` 红（`TestRunKeepsBatchAliveWhenOneJobFails`：attempts 期望 2 实得 1）；逐字节还原后两包复绿（EXIT=0）。
+> ② 的破坏验证：把 `ErrCompileFailed` 别名改回本地 `errors.New(...)` → `TestCompileErrorFamilyIsContractAlias`（asset）与
+> `TestClassifyCompileSentinelsFromContracts`（httpapi，契约错误掉进 500 internal）双红，EXIT=1；逐字节还原后复绿（EXIT=0）。
 >
 > **余项（如实登记，不在本单冒充完成）**：队列记录与 `strategy_build_jobs` 的**跨进程状态回写**仍缺 —— 资产服务没有
 > 「编译进程上报 queued/running/终态」的内部端点，`POST /api/strategies/{id}/build` 今天仍要求资产服务进程内有编译器

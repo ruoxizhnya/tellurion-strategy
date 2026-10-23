@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/jackc/pgx/v5 v5.7.3
-	github.com/ruoxizhnya/tellurion-contracts v0.1.0
+	github.com/ruoxizhnya/tellurion-contracts v0.4.0
 	github.com/stretchr/testify v1.11.1
 )
 

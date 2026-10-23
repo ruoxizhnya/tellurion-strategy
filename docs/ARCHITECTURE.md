@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发（compilerjob.Queue）
+verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发（compilerjob.Queue）+ contracts v0.4.0（编译·资产哨兵改别名）
 ---
 
 # 架构 — tellurion-strategy
@@ -85,8 +85,10 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
         └── 依赖编译工具链（tinygo 0.34.0 镜像 / gcc）—— 只在 build 侧（cmd/compiler）
 ```
 
-- **contracts `v0.1.0` 是已发的 tag**（不是伪版本）。`engine` 子包（package 名仍是 `contracts`）提供 `StrategyRef` /
-  `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / 两个 abi 哨兵 —— 本仓**不复制**这些符号。
+- **contracts `v0.4.0` 是已发的 tag**（2026-10-24，不是伪版本）。`engine` 子包（package 名仍是 `contracts`）提供 `StrategyRef` /
+  `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵，以及 QT-41b ④ 的编译·资产四哨兵
+  （`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`）—— 本仓**不复制**这些符号，
+  四条只留同名别名（`internal/asset/errors.go`），HTTP 错误码表不变。
 - **`pgx/v5` 只出现在存储实现**（`internal/asset/pgstore.go`）；领域模型与 HTTP 层不出现 `pgx` 类型。
 - **不依赖 `tellurion-kit`**：HTTP / 日志用标准库（`net/http`、`log/slog`）；引入 kit 前要先在 `AGENTS.md` §4 登记。
 - 禁止 `replace` 指向仓外路径、禁止提交 `go.work` —— 单仓必须能独立构建。

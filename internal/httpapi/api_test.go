@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
+
 	"tellurion-strategy/internal/asset"
 )
 
@@ -621,4 +623,29 @@ func TestAPI_BuildWithoutCompilerIsUnavailable(t *testing.T) {
 	wantErrorCode(t, call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build",
 		map[string]string{"version_hash": version}, nil),
 		http.StatusServiceUnavailable, "compile_unavailable")
+}
+
+// 编译 / 资产四条哨兵自 contracts v0.4.0 起由契约仓定义。HTTP 错误码表必须
+// **直接认得契约哨兵**（本仓别名只是过渡，不能是唯一能认出来的入口），
+// 否则跨仓调用方把契约错误包一层 `%w` 发过来就会掉进 500 internal。
+func TestClassifyCompileSentinelsFromContracts(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"compile failed", contracts.ErrCompileFailed, http.StatusConflict, "compile_failed"},
+		{"compile unavailable", contracts.ErrCompileUnavailable, http.StatusServiceUnavailable, "compile_unavailable"},
+		{"source too large", contracts.ErrSourceTooLarge, http.StatusRequestEntityTooLarge, "payload_too_large"},
+		{"artifact too large", contracts.ErrArtifactTooLarge, http.StatusRequestEntityTooLarge, "payload_too_large"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status, code := classify(fmt.Errorf("compiler: %w", tc.err))
+			if status != tc.status || code != tc.code {
+				t.Fatalf("classify = (%d, %s), want (%d, %s)", status, code, tc.status, tc.code)
+			}
+		})
+	}
 }
