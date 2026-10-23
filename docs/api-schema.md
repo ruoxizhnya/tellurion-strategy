@@ -6,10 +6,11 @@ verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + int
 
 # API Schema — tellurion-strategy
 
-> **实现状态（2026-10-23）**：9 个公开端点 + 1 个内部登记端点已由 `internal/httpapi` 落地，
-> 语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。**未落项**：PG `Store` 实现与迁移执行入口、
-> build job 持久化（当前是进程内 registry）、`storage=url` 分支、latest TTL 与两级缓存（F/E 裁决的实现）、
-> 14/15 内置策略登记（G 裁决）、core 侧 Mount 门。未落项逐条登记在 `docs/TASKS.md` QT-41/41b 的施工记录里。
+> **实现状态（2026-10-24）**：10 个公开端点 + 1 个内部登记端点由 `internal/httpapi` 落地，
+> 语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。存储有 `Memory`（测试）与 PG（生产，
+> 启动执行迁移）；两级缓存、latest TTL、build job 持久化、14 个内置策略登记均已落地。
+> **剩余未落项**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义单独立文、core 侧 Mount 门、
+> `version_hash` 域标签迁 contracts（等 G1 第二批发版）。逐条登记在 `docs/TASKS.md` QT-41/41b 的施工记录里。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 
@@ -30,6 +31,7 @@ verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + int
 | POST | `/api/strategies/{id}/versions/{hash}/promote` | 标为可用（写 `active_version_hash` / `active_artifact_hash`）→ 200 artifact 视图 |
 | POST | `/api/strategies/{id}/versions/{hash}/deprecate` | 下线（不删，历史回测仍可解析）→ 200 artifact 视图 |
 | GET | `/api/strategies/{id}/versions` | 版本列表（status / hash / toolchain）；无版本返回 `[]`（不是 `null`） |
+| GET | `/api/strategies/{id}/builds/{job_id}` | 查询 build 作业（`202` 返回的 `job_id`）；跨重启可查，路径 id 必须与作业归属一致 |
 
 > `validate` / `promote` / `deprecate` / `artifact` 接受可选 body `{"toolchain": "..."}`（`artifact` 用同名 query 参数）；
 > 同一版本有多个工具链产物且未指定 toolchain 时返回 `409 ambiguous_artifact`，**不替调用方猜**。
@@ -60,6 +62,7 @@ verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + int
 | 版本不存在 | 404 + `version_not_found` | 拒绝（**不回退 latest**） |
 | 无 active 版本 | 404 + `no_active_version` | fail-closed 拒绝跑 |
 | 版本没有该工具链产物 | 404 + `artifact_not_found` | 拒绝 |
+| build job 不存在 / 路径 id 与作业归属不符 | 404 + `job_not_found` | 拒绝（不跨策略枚举） |
 | 未指定 toolchain 而存在多行 | 409 + `ambiguous_artifact` | 由调用方显式选定 |
 | 重复创建 | 409 + `strategy_exists` | 拒绝 |
 | 同字节被登记成不同内容 / 同版本同工具链第二份产物 | 409 + `conflict` | 拒绝 |
@@ -80,7 +83,8 @@ verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + int
 
 > **`abi_mismatch` 不在本服务产生**：本服务没有内核能力集，`abi_version` 与内核的不匹配由**引擎侧**装载门判定
 > （`tellurion-contracts:engine` 的 `ErrAbiVersionMismatch`）。资产服务只回答「这个 abi_version 是否可解析、是否与字节自证相符」。
-> **`job_not_found` 也不在对外面**：`build` 返回的 `job_id` 当前只在进程内可查（未做查询端点，见未落项）。
+> **`job_not_found` 在对外面**：build 返回的 `job_id` 落 `strategy.strategy_build_jobs`，用
+> `GET /api/strategies/{id}/builds/{job_id}` 查询（2026-10-24 落地；此前只在进程内可查）。
 
 ## 3. 幂等性与重试
 

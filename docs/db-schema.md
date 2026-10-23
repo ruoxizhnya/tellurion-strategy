@@ -18,6 +18,7 @@ verified-by: 两处主键/列裁决落地（docs/adr/0002）+ DDL 与代码逐�
 | `strategy.strategy_versions` | 源码版本：`version_hash`（内容寻址）/ `source` / `carrier` / `abi_version` / `scope` / `entry` | 新建 |
 | `strategy.strategy_artifacts` | artifact 元数据：`version_hash` + `artifact_hash` / `size_bytes` / `memory_limit_bytes` / `imports` / `toolchain` / `status` / `storage` / `compile_log` / `built_by` | 新建（主键 `(strategy_id, artifact_hash)`，见 §5 裁决） |
 | `strategy.strategy_artifact_blobs` | 字节码本体（本地栈 BYTEA，8 MiB 上限；`storage='url'` 未实现） | 新建 |
+| `strategy.strategy_build_jobs` | 编译作业：`job_id` / `version_hash` / `toolchain` / `state` / `artifact_hash` / `error` / `finished_at` | 新建（2026-10-24；job 跨重启可查） |
 | `quant.external_signals` | 外部模型信号注入（`content_hash` 幂等去重，`SignalStrategy` 按 `as_of` 拉取） | **不属本仓** · owner = **core strategy-runtime 模块**（与 H5 裁决的 `quant.strategy_state` 同源，SPEC-R-02）；DDL 在 `tellurion:pkg/storage/postgres.go`（Migration 048），写者 `tellurion:pkg/strategy/signal_store.go` |
 
 约束：
@@ -25,6 +26,8 @@ verified-by: 两处主键/列裁决落地（docs/adr/0002）+ DDL 与代码逐�
 - `strategy_artifacts`：`PRIMARY KEY (strategy_id, artifact_hash)` + `UNIQUE (strategy_id, version_hash, toolchain)`；
   字节相同即同一 artifact（内容寻址优先），同版本同工具链不允许第二份字节。
 - `strategy_artifact_blobs`：`PRIMARY KEY (strategy_id, artifact_hash)` + `octet_length(bytes) <= 8388608`。
+- `strategy_build_jobs`：`PRIMARY KEY (id)` + `state IN ('queued','running','succeeded','failed')`；
+  `(strategy_id, version_hash)` 外键指向版本行；`finished_at` 只在终态写入。
 - `version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
 
 ## 2. 只读输入（不属于本仓，禁止写入）

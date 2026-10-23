@@ -138,7 +138,7 @@ func waitJob(t *testing.T, svc *Service, jobID string) BuildJob {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		job, err := svc.Job(jobID)
+		job, err := svc.Job(context.Background(), jobID)
 		if err != nil {
 			t.Fatalf("Job: %v", err)
 		}
@@ -348,7 +348,7 @@ func TestVerify_AcceptsValidArtifact(t *testing.T) {
 		Imports: []string{"env.get_bar", "env.emit_signal"}, Status: StatusBuilt,
 		Storage: StorageInline, Bytes: bytes,
 	}
-	if err := Verify(a); err != nil {
+	if err := Verify(a, "OnBar"); err != nil {
 		t.Fatalf("valid artifact rejected: %v", err)
 	}
 }
@@ -386,7 +386,7 @@ func TestVerify_FailsClosed(t *testing.T) {
 			a.Imports = append([]string(nil), base.Imports...)
 			a.Bytes = append([]byte(nil), base.Bytes...)
 			tc.mutate(&a)
-			if err := Verify(a); !errors.Is(err, tc.want) {
+			if err := Verify(a, "OnBar"); !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -399,7 +399,7 @@ func TestVerify_FailsClosed(t *testing.T) {
 		a.ArtifactHash = ArtifactHash(bad)
 		a.SizeBytes = int64(len(bad))
 		a.Imports = nil
-		if err := Verify(a); !errors.Is(err, contracts.ErrImportNotWhitelisted) {
+		if err := Verify(a, "OnBar"); !errors.Is(err, contracts.ErrImportNotWhitelisted) {
 			t.Fatalf("got %v, want ErrImportNotWhitelisted", err)
 		}
 	})
@@ -411,7 +411,7 @@ func TestVerify_FailsClosed(t *testing.T) {
 		a.Bytes = big
 		a.SizeBytes = int64(len(big))
 		a.ArtifactHash = ArtifactHash(big)
-		if err := Verify(a); !errors.Is(err, ErrArtifactTooLarge) {
+		if err := Verify(a, "OnBar"); !errors.Is(err, ErrArtifactTooLarge) {
 			t.Fatalf("got %v, want ErrArtifactTooLarge", err)
 		}
 	})
@@ -903,6 +903,86 @@ func TestService_ArtifactStorageURLFailsClosed(t *testing.T) {
 	}
 }
 
+func TestService_BuildJobPersistsAcrossServiceInstances(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemory()
+	compiler := &fakeCompiler{id: "tinygo 0.34", bytes: wasmWithImports("env.get_bar2")}
+	svc1, err := New(Options{Store: store, Compiler: compiler, IDGen: seqIDs(), Now: fixedNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := mustCreateWasm(t, svc1, "on_bar/2", contracts.ScopeMarket)
+	v := mustPutSource(t, svc1, def.ID, "src")
+	job, err := svc1.SubmitBuild(ctx, def.ID, v.VersionHash, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitJob(t, svc1, job.ID)
+	if done.State != JobSucceeded {
+		t.Fatalf("build failed: %+v", done)
+	}
+
+	// 新 Service = 新进程视角：job 不在进程内存里，必须来自 Store。
+	svc2, err := New(Options{Store: store, Now: fixedNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc2.Job(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("job must survive a service restart: %v", err)
+	}
+	if got.State != JobSucceeded || got.ArtifactHash != done.ArtifactHash {
+		t.Fatalf("job after restart = %+v", got)
+	}
+	if got.FinishedAt == nil {
+		t.Fatal("finished job must carry finished_at")
+	}
+	if _, err := svc2.Job(ctx, "st_missing"); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("got %v, want ErrJobNotFound", err)
+	}
+}
+
+func TestService_SOArtifactRequiresExportedEntry(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newHarness(t, nil)
+	def, err := svc.CreateDefinition(ctx, CreateDefinitionRequest{
+		Carrier: CarrierSO, ABIVersion: "on_bar/2", Scope: contracts.ScopeMarket, Entry: "Strategy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := mustPutSource(t, svc, def.ID, "package strategy")
+
+	wrong := buildSharedObject([]testSymbol{{"OnBar", globalFunc, 3}})
+	if _, err := svc.RegisterArtifact(ctx, Artifact{
+		StrategyID: def.ID, VersionHash: v.VersionHash, ArtifactHash: ArtifactHash(wrong),
+		Carrier: CarrierSO, ABIVersion: "on_bar/2", Toolchain: "gcc 13",
+		SizeBytes: int64(len(wrong)), MemoryLimitBytes: 64 << 20, Status: StatusBuilt,
+		Storage: StorageInline, Bytes: wrong,
+	}); !errors.Is(err, ErrInvalidArtifact) {
+		t.Fatalf("so without the declared export must fail closed, got %v", err)
+	}
+
+	good := buildSharedObject([]testSymbol{{"Strategy", globalFunc, 3}})
+	if _, err := svc.RegisterArtifact(ctx, Artifact{
+		StrategyID: def.ID, VersionHash: v.VersionHash, ArtifactHash: ArtifactHash(good),
+		Carrier: CarrierSO, ABIVersion: "on_bar/2", Toolchain: "gcc 13",
+		SizeBytes: int64(len(good)), MemoryLimitBytes: 64 << 20, Status: StatusBuilt,
+		Storage: StorageInline, Bytes: good,
+	}); err != nil {
+		t.Fatalf("valid so rejected: %v", err)
+	}
+	if _, err := svc.ValidateVersion(ctx, def.ID, v.VersionHash, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Promote(ctx, def.ID, v.VersionHash, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ArtifactForVersion(ctx, def.ID, v.VersionHash, ""); err != nil {
+		t.Fatalf("so download re-checks the export table: %v", err)
+	}
+}
+
 func TestService_RegisterArtifactRejectsMismatchedVersionMetadata(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newHarness(t, nil)
@@ -941,6 +1021,8 @@ func TestMigrations_PinTheAdjudicatedShape(t *testing.T) {
 		"UNIQUE (strategy_id, version_hash, toolchain)",
 		"octet_length(bytes) <= 8388608",
 		"CHECK (status IN ('built','validated','promoted','rejected','deprecated'))",
+		"CREATE TABLE IF NOT EXISTS strategy.strategy_build_jobs",
+		"CHECK (state IN ('queued','running','succeeded','failed'))",
 	} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("DDL is missing %q", want)

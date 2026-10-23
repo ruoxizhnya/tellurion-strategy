@@ -32,7 +32,8 @@ verified-by: 首批实装链路对表（source→version_hash→build→verify�
    已存在同名定义只核对形状、不覆盖；同名不同 carrier/scope/entry = 启动失败。
 1. `POST /api/strategies` 建定义（`carrier` / `abi_version` / `scope` / `capability` / `entry`）
 2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256，域 `tellurion.strategy_version_hash.v1`）→ 登记 `strategy_versions`
-3. `POST .../build` → 返回 `job_id` → `cmd/compiler` 编译 → 内部端点登记 artifact → 写 `strategy_artifacts` + blobs
+3. `POST .../build` → 先落 `strategy_build_jobs`（queued）再启动编译 → 返回 `job_id` → `GET .../builds/{job_id}` 轮询
+   → `cmd/compiler` 编译 → 内部端点登记 artifact → 写 `strategy_artifacts` + blobs → job 置 succeeded / failed
 4. `POST .../versions/{hash}/validate` → `Verify`：storage 分支 / 空字节 / 8 MiB / size 一致 / sha256 / abi 可解析 / memory 上限 / imports 白名单 → `built→validated`
 5. `POST .../versions/{hash}/promote` → 写 `active_version_hash` + `active_artifact_hash`（`validated→promoted`）
 6. 回测时：`GET .../resolve?ref=id@hash|latest|裸hash` → 元数据 → `GET .../artifact` 拉字节码（ETag = `artifact_hash`）

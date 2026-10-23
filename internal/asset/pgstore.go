@@ -435,6 +435,70 @@ func (p *PG) Deprecate(ctx context.Context, id, versionHash, artifactHash, log s
 	return tx.Commit(ctx)
 }
 
+// SaveJob 持久化一条新作业。
+func (p *PG) SaveJob(ctx context.Context, job BuildJob) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO strategy.strategy_build_jobs
+			(id, strategy_id, version_hash, toolchain, state, artifact_hash, error, created_at, finished_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		job.ID, job.StrategyID, job.VersionHash, job.Toolchain, job.State,
+		job.ArtifactHash, job.Error, job.CreatedAt, job.FinishedAt)
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: job %s", ErrArtifactConflict, job.ID)
+	}
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("%w: job %s references a missing strategy or version", ErrVersionNotFound, job.ID)
+	}
+	return err
+}
+
+// UpdateJob 覆盖作业的可变字段。
+func (p *PG) UpdateJob(ctx context.Context, job BuildJob) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE strategy.strategy_build_jobs
+		   SET state = $2, artifact_hash = $3, error = $4, finished_at = $5
+		 WHERE id = $1`,
+		job.ID, job.State, job.ArtifactHash, job.Error, job.FinishedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: %s", ErrJobNotFound, job.ID)
+	}
+	return nil
+}
+
+// GetJob 返回作业快照。
+func (p *PG) GetJob(ctx context.Context, id string) (BuildJob, error) {
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, err
+	}
+	var (
+		job        BuildJob
+		finishedAt *time.Time
+	)
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, strategy_id, trim(version_hash), toolchain, state,
+		       trim(artifact_hash), error, created_at, finished_at
+		  FROM strategy.strategy_build_jobs WHERE id = $1`, id).
+		Scan(&job.ID, &job.StrategyID, &job.VersionHash, &job.Toolchain, &job.State,
+			&job.ArtifactHash, &job.Error, &job.CreatedAt, &finishedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, id)
+	}
+	if err != nil {
+		return BuildJob{}, err
+	}
+	job.FinishedAt = finishedAt
+	return job, nil
+}
+
 // ─── 事务内与行扫描的共用件 ────────────────────────────────────
 
 type querier interface {

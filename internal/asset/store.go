@@ -34,6 +34,11 @@ type Store interface {
 	// 会留下 promoted 但 latest 指向旧字节的半截状态。
 	Promote(ctx context.Context, id, versionHash, artifactHash, log string) error
 	Deprecate(ctx context.Context, id, versionHash, artifactHash, log string) error
+
+	// build job 持久化：job 一落库就能跨进程重启被查询（未落项 #2）。
+	SaveJob(ctx context.Context, job BuildJob) error
+	UpdateJob(ctx context.Context, job BuildJob) error
+	GetJob(ctx context.Context, id string) (BuildJob, error)
 }
 
 // Memory 是 Store 的内存实现（并发安全、深拷贝出入）。
@@ -43,6 +48,7 @@ type Store interface {
 type Memory struct {
 	mu   sync.RWMutex
 	defs map[string]*memStrategy
+	jobs map[string]BuildJob
 }
 
 type memStrategy struct {
@@ -53,7 +59,7 @@ type memStrategy struct {
 
 // NewMemory 返回空存储。
 func NewMemory() *Memory {
-	return &Memory{defs: make(map[string]*memStrategy)}
+	return &Memory{defs: make(map[string]*memStrategy), jobs: make(map[string]BuildJob)}
 }
 
 func (m *Memory) strategy(id string) (*memStrategy, error) {
@@ -318,6 +324,48 @@ func (m *Memory) UpdateStatus(ctx context.Context, id, artifactHash string, from
 		a.CompileLog += log
 	}
 	return nil
+}
+
+// SaveJob 持久化一条新作业；重复 id fail-closed（id 由 crypto/rand 生成）。
+func (m *Memory) SaveJob(ctx context.Context, job BuildJob) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.jobs[job.ID]; ok {
+		return fmt.Errorf("%w: job %s", ErrArtifactConflict, job.ID)
+	}
+	m.jobs[job.ID] = job
+	return nil
+}
+
+// UpdateJob 覆盖作业的可变字段。
+func (m *Memory) UpdateJob(ctx context.Context, job BuildJob) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.jobs[job.ID]; !ok {
+		return fmt.Errorf("%w: %s", ErrJobNotFound, job.ID)
+	}
+	m.jobs[job.ID] = job
+	return nil
+}
+
+// GetJob 返回作业快照。
+func (m *Memory) GetJob(ctx context.Context, id string) (BuildJob, error) {
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	job, ok := m.jobs[id]
+	if !ok {
+		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, id)
+	}
+	return job, nil
 }
 
 // Promote 在单锁内完成 validated → promoted 与生效指针写入。

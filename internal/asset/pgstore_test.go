@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
 )
@@ -291,6 +292,55 @@ func TestPG_MissingBlobFailsClosed(t *testing.T) {
 	}
 	if _, err := pg.GetArtifact(ctx, "s1", a.ArtifactHash); !errors.Is(err, ErrArtifactFetchFailed) {
 		t.Fatalf("got %v, want ErrArtifactFetchFailed", err)
+	}
+}
+
+func TestPG_BuildJobsPersistAcrossInstances(t *testing.T) {
+	pg := openTestPG(t)
+	ctx := context.Background()
+	if err := pg.CreateDefinition(ctx, pgDefinition("s1")); err != nil {
+		t.Fatal(err)
+	}
+	versionHash := strings.Repeat("a", 64)
+	if _, err := pg.SaveVersion(ctx, pgVersion("s1", versionHash, "src")); err != nil {
+		t.Fatal(err)
+	}
+	job := BuildJob{ID: "job-1", StrategyID: "s1", VersionHash: versionHash,
+		Toolchain: "tinygo 0.34", State: JobQueued, CreatedAt: fixedNow()}
+	if err := pg.SaveJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	got, err := pg.GetJob(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != JobQueued || got.VersionHash != versionHash || got.FinishedAt != nil {
+		t.Fatalf("queued job round-trip = %+v", got)
+	}
+	finished := fixedNow().Add(time.Minute)
+	job.State = JobSucceeded
+	job.ArtifactHash = strings.Repeat("b", 64)
+	job.FinishedAt = &finished
+	if err := pg.UpdateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	// 新 Service 实例 = 进程重启：作业必须从 PG 读出来。
+	svc, err := New(Options{Store: pg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.Job(ctx, "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != JobSucceeded || after.ArtifactHash != job.ArtifactHash || after.FinishedAt == nil {
+		t.Fatalf("job after restart = %+v", after)
+	}
+	if _, err := svc.Job(ctx, "missing"); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("got %v, want ErrJobNotFound", err)
+	}
+	if err := pg.UpdateJob(ctx, BuildJob{ID: "missing", State: JobRunning}); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("update of a missing job: %v", err)
 	}
 }
 

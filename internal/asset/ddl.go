@@ -79,4 +79,20 @@ var migrationStatements = []string{
 		FOREIGN KEY (strategy_id, artifact_hash)
 			REFERENCES strategy.strategy_artifacts(strategy_id, artifact_hash) ON DELETE CASCADE
 	)`,
+
+	// build job 持久化（QT-41 未落项 #2）：进程内 registry 一重启就丢，
+	// job_id 也就无从查询。状态取值与 asset.BuildJob 的常量一一对应。
+	`CREATE TABLE IF NOT EXISTS strategy.strategy_build_jobs (
+		id            TEXT PRIMARY KEY,
+		strategy_id   TEXT NOT NULL REFERENCES strategy.strategy_definitions(id) ON DELETE CASCADE,
+		version_hash  CHAR(64) NOT NULL,
+		toolchain     TEXT NOT NULL,
+		state         TEXT NOT NULL CHECK (state IN ('queued','running','succeeded','failed')),
+		artifact_hash CHAR(64) NOT NULL DEFAULT '',
+		error         TEXT NOT NULL DEFAULT '',
+		created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+		finished_at   TIMESTAMPTZ,
+		FOREIGN KEY (strategy_id, version_hash)
+			REFERENCES strategy.strategy_versions(strategy_id, version_hash) ON DELETE CASCADE
+	)`,
 }

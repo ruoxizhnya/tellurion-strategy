@@ -252,7 +252,7 @@ func waitJob(t *testing.T, svc *asset.Service, jobID string) asset.BuildJob {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		job, err := svc.Job(jobID)
+		job, err := svc.Job(context.Background(), jobID)
 		if err != nil {
 			t.Fatalf("Job(%s): %v", jobID, err)
 		}
@@ -305,6 +305,19 @@ func TestAPI_WasmLifecycle(t *testing.T) {
 	if job.ArtifactHash != wantHash {
 		t.Fatalf("job artifact_hash = %s, want %s", job.ArtifactHash, wantHash)
 	}
+
+	// job_id 查询端点：build 完成后仍可查（落库，不是进程内 registry）。
+	resp = call(t, srv, http.MethodGet, "/api/strategies/"+id+"/builds/"+jobID, nil, nil)
+	wantStatus(t, resp, http.StatusOK)
+	jobBody := decodeObject(t, resp.Body)
+	if jobBody["job_id"] != jobID || jobBody["state"] != asset.JobSucceeded ||
+		jobBody["artifact_hash"] != wantHash {
+		t.Fatalf("job endpoint = %s", resp.Body)
+	}
+	wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/st_other/builds/"+jobID, nil, nil),
+		http.StatusNotFound, "job_not_found")
+	wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/"+id+"/builds/st_missing", nil, nil),
+		http.StatusNotFound, "job_not_found")
 
 	resp = call(t, srv, http.MethodGet, "/api/strategies/"+id+"/versions", nil, nil)
 	wantStatus(t, resp, http.StatusOK)

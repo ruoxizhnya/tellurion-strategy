@@ -46,6 +46,7 @@ func New(svc *asset.Service) (*API, error) {
 	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/promote", a.promote)
 	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/deprecate", a.deprecate)
 	a.mux.HandleFunc("GET /api/strategies/{id}/versions", a.listVersions)
+	a.mux.HandleFunc("GET /api/strategies/{id}/builds/{job_id}", a.getBuildJob)
 	a.mux.HandleFunc("GET /api/strategies/{id}/resolve", a.resolve)
 	a.mux.HandleFunc("GET /api/strategies/{id}/versions/{hash}/artifact", a.downloadArtifact)
 
@@ -175,6 +176,22 @@ func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
 		views = []asset.VersionView{}
 	}
 	writeJSON(w, http.StatusOK, views)
+}
+
+// getBuildJob 是 build 的轮询端点：202 返回的 job_id 在进程重启后仍可查。
+// 路径带 strategy id 且必须与作业归属一致，避免跨策略枚举 job_id。
+func (a *API) getBuildJob(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("job_id")
+	job, err := a.svc.Job(r.Context(), jobID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if job.StrategyID != r.PathValue("id") {
+		writeError(w, fmt.Errorf("%w: %s", asset.ErrJobNotFound, jobID))
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 // ─── 读侧 ──────────────────────────────────────────────────────
@@ -343,6 +360,8 @@ func classify(err error) (int, string) {
 		return http.StatusNotFound, "no_active_version"
 	case errors.Is(err, asset.ErrArtifactNotFound):
 		return http.StatusNotFound, "artifact_not_found"
+	case errors.Is(err, asset.ErrJobNotFound):
+		return http.StatusNotFound, "job_not_found"
 
 	case errors.Is(err, asset.ErrStrategyExists):
 		return http.StatusConflict, "strategy_exists"

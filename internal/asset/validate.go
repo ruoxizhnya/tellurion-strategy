@@ -69,8 +69,9 @@ func (p ImportPolicy) Validate(imports []string) error {
 // 字节 hash、体积、内存上限、imports 白名单、abi_version 可解析。
 //
 // wasm 的 imports **从字节里解析**（WasmImports），再与元数据声明比对：
-// 拿元数据验元数据等于没验。
-func Verify(a Artifact) error {
+// 拿元数据验元数据等于没验。so 载体校验导出符号表（entry 必须是一个已定义的
+// GLOBAL/WEAK 符号）：只比体积和 hash 回答不了「挂载时能不能找到入口」。
+func Verify(a Artifact, entry string) error {
 	if a.Storage == StorageURL {
 		return fmt.Errorf("%w: artifact %s uses storage=url", ErrStorageUnsupported, a.ArtifactHash)
 	}
@@ -97,9 +98,10 @@ func Verify(a Artifact) error {
 	if err := normalizeImports(&a); err != nil {
 		return err
 	}
+	if a.Carrier == CarrierSO {
+		return validateSOExports(a.Bytes, entry)
+	}
 	if a.Carrier != CarrierWASM {
-		// so / 其它载体没有 wasm import section 可解析；声明项无法自证，登记在
-		// docs/TASKS.md 的风险条里，接入 so 工具链时补符号表校验。
 		return nil
 	}
 	policy, err := ImportPolicyFor(a.ABIVersion)

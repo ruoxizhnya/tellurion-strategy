@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
@@ -61,9 +61,6 @@ type Service struct {
 	now              func() time.Time
 	memoryLimitBytes int64
 	compileTimeout   time.Duration
-
-	jobsMu sync.RWMutex
-	jobs   map[string]*BuildJob
 }
 
 // New 装配服务；Store 必填。
@@ -79,7 +76,6 @@ func New(opts Options) (*Service, error) {
 		now:              opts.Now,
 		memoryLimitBytes: opts.MemoryLimitBytes,
 		compileTimeout:   opts.CompileTimeout,
-		jobs:             make(map[string]*BuildJob),
 	}
 	if s.idGen == nil {
 		s.idGen = randomID
@@ -166,17 +162,17 @@ func (s *Service) PutSource(ctx context.Context, id, source string) (Version, er
 	})
 }
 
-// BuildJob 是可检索的编译作业状态（当前进程内 registry，见 docs/TASKS.md 风险条）。
+// BuildJob 是可检索的编译作业状态（落 strategy.strategy_build_jobs，跨重启可查）。
 type BuildJob struct {
-	ID           string    `json:"job_id"`
-	StrategyID   string    `json:"strategy_id"`
-	VersionHash  string    `json:"version_hash"`
-	Toolchain    string    `json:"toolchain"`
-	State        string    `json:"state"`
-	ArtifactHash string    `json:"artifact_hash,omitempty"`
-	Error        string    `json:"error,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	FinishedAt   time.Time `json:"finished_at,omitempty"`
+	ID           string     `json:"job_id"`
+	StrategyID   string     `json:"strategy_id"`
+	VersionHash  string     `json:"version_hash"`
+	Toolchain    string     `json:"toolchain"`
+	State        string     `json:"state"`
+	ArtifactHash string     `json:"artifact_hash,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 }
 
 // 作业状态取值。
@@ -208,7 +204,7 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 			ErrUnsupportedToolchain, toolchain, s.compiler.ToolchainID())
 	}
 
-	job := &BuildJob{
+	job := BuildJob{
 		ID:          s.idGen(),
 		StrategyID:  id,
 		VersionHash: versionHash,
@@ -216,12 +212,10 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 		State:       JobQueued,
 		CreatedAt:   s.now(),
 	}
-	// 快照必须在启动 goroutine **之前**拷出来：runBuild 会在锁内改写 job.State，
-	// 无锁读同一块内存就是数据竞争。
-	s.jobsMu.Lock()
-	s.jobs[job.ID] = job
-	out := *job
-	s.jobsMu.Unlock()
+	// 先落库再启动 goroutine：202 一旦返回，job_id 就必须可查（含进程重启后）。
+	if err := s.store.SaveJob(ctx, job); err != nil {
+		return BuildJob{}, err
+	}
 
 	req := CompileRequest{
 		StrategyID:       id,
@@ -234,7 +228,7 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 	}
 	go s.runBuild(job.ID, req)
 
-	return out, nil
+	return job, nil
 }
 
 // runBuild 执行一次编译并落 artifact 行；失败写回 job 状态。
@@ -266,7 +260,7 @@ func (s *Service) runBuild(jobID string, req CompileRequest) {
 		CreatedAt:        s.now(),
 		Bytes:            append([]byte(nil), res.Bytes...),
 	}
-	if err := Verify(artifact); err != nil {
+	if err := Verify(artifact, req.Entry); err != nil {
 		// 编译产出的字节过不了自己的门 ⇒ 不落库，作业失败可检索。
 		s.setJobState(jobID, JobFailed, "", fmt.Sprintf("%v", err))
 		return
@@ -287,10 +281,12 @@ func (s *Service) runBuild(jobID string, req CompileRequest) {
 }
 
 func (s *Service) setJobState(jobID, state, artifactHash, errMsg string) {
-	s.jobsMu.Lock()
-	defer s.jobsMu.Unlock()
-	job, ok := s.jobs[jobID]
-	if !ok {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		// 作业状态更新失败只能记账：调用方已经拿到 202，没有第二条回传通道。
+		slog.Error("build job: load state", "job_id", jobID, "error", err)
 		return
 	}
 	job.State = state
@@ -299,19 +295,17 @@ func (s *Service) setJobState(jobID, state, artifactHash, errMsg string) {
 	}
 	job.Error = errMsg
 	if state == JobSucceeded || state == JobFailed {
-		job.FinishedAt = s.now()
+		now := s.now()
+		job.FinishedAt = &now
+	}
+	if err := s.store.UpdateJob(ctx, job); err != nil {
+		slog.Error("build job: persist state", "job_id", jobID, "error", err)
 	}
 }
 
-// Job 返回作业快照（供测试与运维观测；不对公网暴露）。
-func (s *Service) Job(jobID string) (BuildJob, error) {
-	s.jobsMu.RLock()
-	defer s.jobsMu.RUnlock()
-	job, ok := s.jobs[jobID]
-	if !ok {
-		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, jobID)
-	}
-	return *job, nil
+// Job 返回作业快照（来自持久化 Store，跨进程重启可查）。
+func (s *Service) Job(ctx context.Context, jobID string) (BuildJob, error) {
+	return s.store.GetJob(ctx, jobID)
 }
 
 // ValidateVersion 是 W4：静态校验 + 状态机 built → validated/rejected。
@@ -325,7 +319,11 @@ func (s *Service) ValidateVersion(ctx context.Context, id, versionHash, toolchai
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := Verify(a); err != nil {
+	version, err := s.store.GetVersion(ctx, id, versionHash)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if err := Verify(a, version.Entry); err != nil {
 		_ = s.store.UpdateStatus(ctx, id, a.ArtifactHash, StatusBuilt, StatusRejected, err.Error())
 		return Artifact{}, err
 	}
@@ -495,7 +493,11 @@ func (s *Service) ArtifactForVersion(ctx context.Context, id, versionHash, toolc
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := Verify(a); err != nil {
+	version, err := s.store.GetVersion(ctx, id, versionHash)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if err := Verify(a, version.Entry); err != nil {
 		return Artifact{}, err
 	}
 	return a, nil
@@ -536,7 +538,7 @@ func (s *Service) RegisterArtifact(ctx context.Context, a Artifact) (Artifact, e
 	if a.Carrier != version.Carrier || a.ABIVersion != version.ABIVersion {
 		return Artifact{}, fmt.Errorf("%w: artifact carrier/abi do not match version", ErrInvalidArtifact)
 	}
-	if err := Verify(a); err != nil {
+	if err := Verify(a, version.Entry); err != nil {
 		return Artifact{}, err
 	}
 	if err := normalizeImports(&a); err != nil {

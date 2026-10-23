@@ -20,7 +20,7 @@ verified-by: 首批实装包布局对表（internal/asset · httpapi · compile 
   validate / promote / deprecate        artifact —— 下载字节码
         │                                     │
         ↓                                     ↓
-  strategy.strategy_definitions / _artifacts / _artifact_blobs
+  strategy.strategy_definitions / _versions / _artifacts / _artifact_blobs / _build_jobs
                     （DDL 唯一 owner = 本仓）
 ```
 
@@ -47,7 +47,8 @@ internal/
                      / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
                      / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
                      / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
-  httpapi/           传输层：标准库 http.ServeMux，9 个公开端点 + 1 个内部登记端点，wire code 映射
+                     / elf.go（carrier=so 的导出符号表校验：entry 必须是已定义 GLOBAL/WEAK 符号）
+  httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 1 个内部登记端点，wire code 映射
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、env 白名单、超时、日志截断）
   compilerjob/       编译作业管线：Job → 编译 → artifact_hash → 内部端点回填
 doc.go               仓级包文档（无代码）
@@ -60,7 +61,8 @@ doc.go               仓级包文档（无代码）
 **事务边界**：`promote` / `deprecate` 的「artifact 状态 + definition 生效指针」在 Store 内单事务提交
 （PG）或单锁内完成（Memory）；HTTP/Service 层不再分两步写。
 
-**未落**：build job 持久化与 `job_id` 查询；so 导出符号表校验。清单见 `docs/TASKS.md`。
+**未落**：`storage=url` 分支（只保留列）、`carrier=external` 的 hash 语义单独立文、`version_hash` 域标签迁 contracts
+（等 G1 第二批发版）。清单见 `docs/TASKS.md`。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
@@ -102,5 +104,5 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 腿 1 | DSL 资产化（零工具链）：`carrier=dsl` + `version_hash` + `strategy_ref` | ✅ `version_hash` / `strategy_ref` 解析已落地（2026-10-23） |
-| 腿 2 | WASM：工具链 + PoC → go/no-go | 🔶 执行器与装配已落地，真工具链镜像待接 |
-| X2 | 本仓完整落地（写 7 + 读 2 端点） | 🔶 9+1 端点已实装（`Memory` Store）；PG Store / 迁移执行 / 缓存 / 内置策略登记未落 |
+| 腿 2 | WASM：工具链 + PoC → go/no-go | 🔶 执行器与装配已落地，真工具链镜像待接（QT-41b 未落项） |
+| X2 | 本仓完整落地（写 7 + 读 2 端点） | 🔶 9 个业务端点 + job 查询 + 内部登记已实装；PG / 迁移 / 缓存 / 内置登记已落；余 `storage=url`、external 语义、version_hash 契约收编 |
