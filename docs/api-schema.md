@@ -94,6 +94,8 @@ verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + int
 - artifact **永不失效**：引擎按 `artifact_hash` 缓存，服务停机也能跑已缓存的。
 - 只有 `latest` 有 TTL —— **F 已裁决（2026-10-21）：TTL 300s**，promote 响应携带新 hash 供本进程主动失效，**不引 webhook / 消息总线**（源文 `tellurion:docs/design/qt-decoupling/strategy-source-of-truth-and-cache.md` 的裁决条 E/F/G/H）。
   原文那句「事件失效（要立 ADR）」随该裁决作废，不要再按「待立」对待。
+  **已落地（2026-10-24）**：latest 结果按 strategy_id 缓存 300s，`promote` / `deprecate` 成功后同进程立即失效；
+  artifact 字节走 L1 内存 LRU + L2 本地盘内容寻址（容量驱逐、内容自证），进程重启后已缓存 hash 仍按原字节返回。
 - 端点废弃走 `deprecated` 头 + 一个 MINOR 周期。
 - ⚠️ **semver 与 hash 是两套东西**：`strategy_ref` / `artifact_hash` / `version_hash` / `run_spec_hash` 自带版本语义（同 hash = 同内容），**不参与 semver**，也不因它们变化而 bump 版本号；
   本仓的 HTTP 面随 `tellurion-contracts` 的版本纪律走（口径源头 `tellurion:docs/TASKS.md` QT-19 ③，落地形态 `tellurion-contracts:README.md`）。

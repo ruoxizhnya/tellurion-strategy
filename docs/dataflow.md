@@ -34,12 +34,19 @@ verified-by: 首批实装链路对表（source→version_hash→build→verify�
 5. `POST .../versions/{hash}/promote` → 写 `active_version_hash` + `active_artifact_hash`（`validated→promoted`）
 6. 回测时：`GET .../resolve?ref=id@hash|latest|裸hash` → 元数据 → `GET .../artifact` 拉字节码（ETag = `artifact_hash`）
 7. 引擎按 `artifact_hash` 缓存：**同 hash 第二次不再请求**
+8. 服务侧缓存（E/F 裁决，2026-10-24 落地）：
+   - artifact 字节：L1 内存 LRU → L2 本地磁盘内容寻址（`<dir>/<hash[:2]>/<hash>`）→ 回源 PG；L2 读出必须重算 sha256 与文件名一致，
+     不一致当 miss 并删文件。artifact **永不失效**（同 hash 同内容），只按容量驱逐。
+   - `resolve?ref=latest`：结果按 strategy_id 缓存 **TTL 300s**；`promote` / `deprecate` 成功后在同一进程内主动失效
+     （响应已携带新 hash，不引 webhook / msgbus）。
 
 ## 3. 失败模式（每一处 fail-closed 都要能指名）
 
 | 失败点 | 症状 | 兜底 |
 |---|---|---|
-| 服务停机 | 回测跑不了 | 已缓存 hash 照跑（验收项） |
+| 服务停机 | 回测跑不了 | 已缓存 hash 照跑（验收项）：服务侧的 L2 内容寻址缓存跨进程重启复用；字节回源不可用时，已缓存 hash 仍按原字节返回 |
+| 缓存被篡改 | 跑错字节码 | L1 是进程内副本；L2 读出重算 sha256，与文件名不符即删并 miss，绝不返回 |
+| latest 指针已变但缓存未过期 | 5 分钟内跑旧版本 | promote / deprecate 同进程主动失效；跨进程最多 300s（F 裁决的显式取舍） |
 | 源码改但 hash 没变 | 版本混乱 | canonical 化规则固定；`VersionHash` 输入集冻结 |
 | 校验被绕过 | 跑不可信字节码 | `promote` 只能从 `validated` 出发，`built`/`rejected` 一律 409 |
 | 无 active 版本 | 引擎静默用内置策略 | **禁止**：404 `no_active_version` |

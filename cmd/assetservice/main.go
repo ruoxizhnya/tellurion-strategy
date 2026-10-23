@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"tellurion-strategy/internal/asset"
@@ -31,6 +32,11 @@ func run() error {
 	addr := flag.String("addr", "127.0.0.1:8085", "listen address")
 	dsn := flag.String("dsn", os.Getenv("STRATEGY_DATABASE_URL"),
 		"PostgreSQL DSN; empty selects the in-memory store (non-persistent)")
+	cacheDir := flag.String("cache-dir", defaultCacheDir(),
+		"local content-addressed cache directory for artifact bytes; empty disables the disk tier")
+	cacheMemory := flag.Int64("cache-memory-bytes", asset.DefaultMemoryCacheBytes, "in-memory artifact cache capacity in bytes")
+	cacheDisk := flag.Int64("cache-disk-bytes", asset.DefaultDiskCacheBytes, "on-disk artifact cache capacity in bytes")
+	latestTTL := flag.Duration("latest-ttl", asset.DefaultLatestTTL, "TTL for resolve?ref=latest results")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -62,7 +68,18 @@ func run() error {
 		defer closeDB()
 	}
 
-	svc, err := asset.New(asset.Options{Store: store})
+	// 缓存是读路径的优化；构造失败（目录不可写等）在启动期就报，不做静默降级。
+	cache, err := asset.NewCache(asset.CacheConfig{
+		Dir:         *cacheDir,
+		MemoryBytes: *cacheMemory,
+		DiskBytes:   *cacheDisk,
+		LatestTTL:   *latestTTL,
+	})
+	if err != nil {
+		return err
+	}
+
+	svc, err := asset.New(asset.Options{Store: store, Cache: cache})
 	if err != nil {
 		return err
 	}
@@ -81,4 +98,14 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// defaultCacheDir 给磁盘二级缓存一个跨重启稳定的位置；拿不到用户缓存目录时
+// 退回空串（只开内存一级），而不是写当前工作目录。
+func defaultCacheDir() string {
+	dir, err := os.UserCacheDir()
+	if err != nil || dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "tellurion-strategy", "artifacts")
 }

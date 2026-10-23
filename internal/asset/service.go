@@ -45,6 +45,7 @@ type Compiler interface {
 type Options struct {
 	Store            Store
 	Compiler         Compiler // nil = build 端点 fail-closed（ErrCompileUnavailable）
+	Cache            *Cache   // nil = 直接回源（无 L1/L2、无 latest TTL）
 	IDGen            func() string
 	Now              func() time.Time
 	MemoryLimitBytes int64
@@ -55,6 +56,7 @@ type Options struct {
 type Service struct {
 	store            Store
 	compiler         Compiler
+	cache            *Cache
 	idGen            func() string
 	now              func() time.Time
 	memoryLimitBytes int64
@@ -72,6 +74,7 @@ func New(opts Options) (*Service, error) {
 	s := &Service{
 		store:            opts.Store,
 		compiler:         opts.Compiler,
+		cache:            opts.Cache,
 		idGen:            opts.IDGen,
 		now:              opts.Now,
 		memoryLimitBytes: opts.MemoryLimitBytes,
@@ -277,6 +280,9 @@ func (s *Service) runBuild(jobID string, req CompileRequest) {
 		s.setJobState(jobID, JobFailed, "", fmt.Sprintf("%v", err))
 		return
 	}
+	if s.cache != nil {
+		_ = s.cache.Put(saved.ArtifactHash, saved.Bytes)
+	}
 	s.setJobState(jobID, JobSucceeded, saved.ArtifactHash, "")
 }
 
@@ -315,7 +321,7 @@ func (s *Service) ValidateVersion(ctx context.Context, id, versionHash, toolchai
 		return Artifact{}, err
 	}
 	// 元数据接口不带字节：校验门必须拿到真实字节，不能拿「有这行」当通过。
-	a, err = s.store.GetArtifact(ctx, id, a.ArtifactHash)
+	a, err = s.artifactWithBytes(ctx, a)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -344,6 +350,11 @@ func (s *Service) Promote(ctx context.Context, id, versionHash, toolchain string
 	if err := s.store.Promote(ctx, id, versionHash, a.ArtifactHash, "promoted"); err != nil {
 		return Artifact{}, err
 	}
+	// F 裁决：promote 的响应已带新 hash；本进程必须在同一刻失效 latest，
+	// 否则 300s 内 resolve?ref=latest 还指着旧字节。
+	if s.cache != nil {
+		s.cache.InvalidateLatest(id)
+	}
 	return s.store.GetArtifact(ctx, id, a.ArtifactHash)
 }
 
@@ -358,6 +369,9 @@ func (s *Service) Deprecate(ctx context.Context, id, versionHash, toolchain stri
 	}
 	if err := s.store.Deprecate(ctx, id, versionHash, a.ArtifactHash, "deprecated"); err != nil {
 		return Artifact{}, err
+	}
+	if s.cache != nil {
+		s.cache.InvalidateLatest(id)
 	}
 	return s.store.GetArtifact(ctx, id, a.ArtifactHash)
 }
@@ -417,11 +431,16 @@ func (s *Service) ListVersions(ctx context.Context, id string) ([]VersionView, e
 //     promoted 的 artifact，并把实际 artifact_hash 回写；
 //   - `id@hash` → id 必须与路径一致（否则 400），其余同上。
 func (s *Service) Resolve(ctx context.Context, id, ref string) (ResolveResult, error) {
-	def, err := s.store.GetDefinition(ctx, id)
+	parsed, err := parseResolveRef(id, ref)
 	if err != nil {
 		return ResolveResult{}, err
 	}
-	parsed, err := parseResolveRef(id, ref)
+	if parsed.IsLatest() && s.cache != nil {
+		if cached, ok := s.cache.Latest(id); ok {
+			return cached, nil
+		}
+	}
+	def, err := s.store.GetDefinition(ctx, id)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -433,7 +452,11 @@ func (s *Service) Resolve(ctx context.Context, id, ref string) (ResolveResult, e
 		if err != nil {
 			return ResolveResult{}, err
 		}
-		return buildResolveResult(def, a), nil
+		result := buildResolveResult(def, a)
+		if s.cache != nil {
+			s.cache.PutLatest(id, result)
+		}
+		return result, nil
 	}
 
 	if a, err := s.store.GetArtifact(ctx, id, parsed.Hash); err == nil {
@@ -468,7 +491,7 @@ func (s *Service) ArtifactForVersion(ctx context.Context, id, versionHash, toolc
 	if err != nil {
 		return Artifact{}, err
 	}
-	a, err = s.store.GetArtifact(ctx, id, a.ArtifactHash)
+	a, err = s.artifactWithBytes(ctx, a)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -476,6 +499,26 @@ func (s *Service) ArtifactForVersion(ctx context.Context, id, versionHash, toolc
 		return Artifact{}, err
 	}
 	return a, nil
+}
+
+// artifactWithBytes 用内容寻址缓存补字节：L1 → L2 → Store。
+//
+// 缓存写失败不影响正确性（缓存只是副本），读路径必须继续。
+func (s *Service) artifactWithBytes(ctx context.Context, meta Artifact) (Artifact, error) {
+	if s.cache != nil {
+		if raw, ok := s.cache.Get(meta.ArtifactHash); ok {
+			meta.Bytes = raw
+			return meta, nil
+		}
+	}
+	full, err := s.store.GetArtifact(ctx, meta.StrategyID, meta.ArtifactHash)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if s.cache != nil {
+		_ = s.cache.Put(full.ArtifactHash, full.Bytes)
+	}
+	return full, nil
 }
 
 // RegisterArtifact 是编译服务回填 artifact 的内部入口。
@@ -499,7 +542,14 @@ func (s *Service) RegisterArtifact(ctx context.Context, a Artifact) (Artifact, e
 	if err := normalizeImports(&a); err != nil {
 		return Artifact{}, err
 	}
-	return s.store.SaveArtifact(ctx, a)
+	saved, err := s.store.SaveArtifact(ctx, a)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if s.cache != nil {
+		_ = s.cache.Put(saved.ArtifactHash, saved.Bytes)
+	}
+	return saved, nil
 }
 
 // pickArtifact 按 (version, toolchain) 选一行；toolchain 为空且多行 → 409。

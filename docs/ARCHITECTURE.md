@@ -32,7 +32,8 @@ verified-by: 首批实装包布局对表（internal/asset · httpapi · compile 
 | 版本与 hash | canonical 化 + sha256 | 不改源码内容 |
 | 编译（build） | 触发编译 job，产出 artifact | 不做运行时 |
 | 校验（validate） | imports / 体积 / 内存 | 不做安全沙箱（那是 core） |
-| 解析（resolve） | ref → 元数据 | 不缓存字节码（引擎自己缓存） |
+| 解析（resolve） | ref → 元数据；latest 结果按 TTL 缓存 | 不缓存字节码给引擎（引擎自己缓存） |
+| 缓存（cache） | artifact 字节 L1 内存 LRU + L2 本地盘内容寻址；latest TTL 300s | 不改写 artifact / 不参与状态机 |
 
 ## 3.1 包布局（现状，2026-10-23）
 
@@ -44,6 +45,7 @@ cmd/
 internal/
   asset/             领域核心：模型 / VersionHash / Verify / WasmImports / ImportPolicyFor
                      / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
+                     / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
   httpapi/           传输层：标准库 http.ServeMux，9 个公开端点 + 1 个内部登记端点，wire code 映射
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、env 白名单、超时、日志截断）
   compilerjob/       编译作业管线：Job → 编译 → artifact_hash → 内部端点回填
@@ -57,7 +59,7 @@ doc.go               仓级包文档（无代码）
 **事务边界**：`promote` / `deprecate` 的「artifact 状态 + definition 生效指针」在 Store 内单事务提交
 （PG）或单锁内完成（Memory）；HTTP/Service 层不再分两步写。
 
-**未落**：两级缓存与 latest TTL；build job 持久化与 `job_id` 查询；so 导出符号表校验。清单见 `docs/TASKS.md`。
+**未落**：build job 持久化与 `job_id` 查询；so 导出符号表校验。清单见 `docs/TASKS.md`。
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
