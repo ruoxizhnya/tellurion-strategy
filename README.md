@@ -1,6 +1,6 @@
 # tellurion-strategy
 
-> module: `tellurion-strategy` ｜ 状态：**预留（S0 占位，触发式启动）——尚未启动，无实现**
+> module: `tellurion-strategy` ｜ 状态：**🔶 首批实装（2026-10-23）**——9+1 端点已跑在 `Memory` Store 上，PG Store / 迁移执行 / 缓存 / 内置策略登记未落
 
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
@@ -8,9 +8,15 @@
 
 | 路径 | 内容 |
 |---|---|
+| `cmd/assetservice/` | 资产服务进程入口（`127.0.0.1:8085`，当前 `Memory` Store） |
+| `cmd/compiler/` | 编译服务进程入口（读 job JSON → 编译 → 内部端点登记 artifact） |
+| `internal/asset/` | 领域核心：模型 / `VersionHash` / `Verify` / `WasmImports` / Store 端口 + `Memory` / DDL / `Service` |
+| `internal/httpapi/` | 传输层：标准库 `net/http` 的 9 个公开端点 + 1 个内部登记端点 |
+| `internal/compile/` | Compile 门：toolchain 执行器（`-target=wasm-unknown`、env 白名单、超时、日志截断） |
+| `internal/compilerjob/` | 编译作业管线：编译 → `artifact_hash` → 内部端点回填 |
 | `docs/` | 本仓文档：台账 / 边界 / 决策 / 归档 —— 从这里进：`docs/README.md` |
 | `AGENTS.md` | 本仓入口（构建、边界、禁止、依赖版本） |
-| `doc.go` | 占位包（无实现） |
+| `doc.go` | 仓级包文档（无代码） |
 
 ## 快速开始
 
@@ -21,6 +27,12 @@ go test ./...
 ```
 
 本仓**单独 checkout 就能跑通**上面三条。需要别的仓源码才过 → 边界错了，不是加 `replace` 能解决的问题。
+
+跑起来：
+
+```bash
+go run ./cmd/assetservice -addr 127.0.0.1:8085
+```
 
 ## 边界
 

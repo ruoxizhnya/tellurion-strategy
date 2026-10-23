@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-22
-verified-by: 接口对表时订正两处过时声明（A 已裁 BYTEA；新列 6/7 不一致待裁）
+last-verified: 2026-10-23
+verified-by: 两处主键/列裁决落地（docs/adr/0002）+ DDL 与代码逐列对表（internal/asset/ddl.go）
 ---
 
 # DB Schema — tellurion-strategy
@@ -14,12 +14,18 @@ verified-by: 接口对表时订正两处过时声明（A 已裁 BYTEA；新列 6
 
 | 表 | 内容 | 现状 |
 |---|---|---|
-| `strategy.strategy_definitions` | 定义（原 `strategies` 升级）：`carrier` / `abi_version` / `scope` / `capability` / `entry` / `active_version_hash` | 改造 |
-| `strategy.strategy_artifacts` | artifact 元数据：`version_hash` + `artifact_hash` / `size_bytes` / `memory_limit_bytes` / `imports` / `toolchain` / `status` / `storage` | 新建 |
-| `strategy.strategy_artifact_blobs` | 字节码本体（本地栈 BYTEA，8 MiB 上限；`storage='url'` 时可为空） | 新建 |
+| `strategy.strategy_definitions` | 定义（原 `strategies` 升级）：`carrier` / `abi_version` / `scope` / `capability` / `entry` / `active_version_hash` / **`active_artifact_hash`** | 改造（7 新列，见 §5 裁决） |
+| `strategy.strategy_versions` | 源码版本：`version_hash`（内容寻址）/ `source` / `carrier` / `abi_version` / `scope` / `entry` | 新建 |
+| `strategy.strategy_artifacts` | artifact 元数据：`version_hash` + `artifact_hash` / `size_bytes` / `memory_limit_bytes` / `imports` / `toolchain` / `status` / `storage` / `compile_log` / `built_by` | 新建（主键 `(strategy_id, artifact_hash)`，见 §5 裁决） |
+| `strategy.strategy_artifact_blobs` | 字节码本体（本地栈 BYTEA，8 MiB 上限；`storage='url'` 未实现） | 新建 |
 | `quant.external_signals` | 外部模型信号注入（`content_hash` 幂等去重，`SignalStrategy` 按 `as_of` 拉取） | **不属本仓** · owner = **core strategy-runtime 模块**（与 H5 裁决的 `quant.strategy_state` 同源，SPEC-R-02）；DDL 在 `tellurion:pkg/storage/postgres.go`（Migration 048），写者 `tellurion:pkg/strategy/signal_store.go` |
 
-约束：`UNIQUE(strategy_id, version_hash)`；`version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
+约束：
+- `strategy_versions`：`PRIMARY KEY (strategy_id, version_hash)`。
+- `strategy_artifacts`：`PRIMARY KEY (strategy_id, artifact_hash)` + `UNIQUE (strategy_id, version_hash, toolchain)`；
+  字节相同即同一 artifact（内容寻址优先），同版本同工具链不允许第二份字节。
+- `strategy_artifact_blobs`：`PRIMARY KEY (strategy_id, artifact_hash)` + `octet_length(bytes) <= 8388608`。
+- `version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
 
 ## 2. 只读输入（不属于本仓，禁止写入）
 
@@ -45,19 +51,30 @@ verified-by: 接口对表时订正两处过时声明（A 已裁 BYTEA；新列 6
 
 **本仓约定**（从建仓第一天执行）：
 
-- 迁移文件只放 `migrations/`，命名 `<序号>_<动作>.sql`，**本仓内**递增（不与别的仓共享序列，也不复用号）。
-- **执行机制随第一个建表单定，二选一（不能"都不选"）**：
-  1. **core 式**：Go 里的 `migrationStatements()` 数组 + 启动执行，幂等、无版本表——与 core 一致、运维零新增；
-  2. **版本化**：引入迁移库 + `schema_migrations` 表（可 down、有执行记录）——服务变多后更稳，但要一次性 baseline。
-  **取向**：X1~X3 期间优先 ①（少一层依赖），服务数 ≥3 或出现"必须先降级"的需求时重估 ②。
+- **执行机制已定（取向 ①，2026-10-23）**：Go 数组 + 启动执行、幂等、无版本表 —— 语句本体在
+  `internal/asset/ddl.go` 的 `migrationStatements`，由 `asset.Migrations()` 交出副本。
+  **迁移执行入口（PG 连接 + 启动时跑）尚未接线**（当前只有 `Memory` Store；登记在 `docs/TASKS.md` QT-41 未落项）。
+- 不另建 `migrations/*.sql`：本仓 DDL 的唯一真相是上面那个 Go 数组；`.sql` 会把真相劈成两份。
 - **只前滚**：已合并的迁移不改；修错靠新增一条。
 - 每条必须可重入（`IF NOT EXISTS` / `IF EXISTS`），且能在空库上一次跑完。
 - 跨 schema 取数只走**只读视图或 API**；出现 `join` 别人的表就是边界腐化的第一信号。
 - 结构变更的同步义务：本文件 + `docs/ARCHITECTURE.md` 的「数据归属」节必须同一次提交里更新。
 
-## 5. 待定
+## 5. 已裁决
 
-- ~~对象存储 vs BYTEA（未决 A）当前按 BYTEA 落地；改判要立 ADR~~ → **A 已裁决（2026-10-21）**：本地栈 PostgreSQL `BYTEA`，**单 blob ≤ 8 MiB 且超限 fail-loud**（不静默截断、不落本地盘）；`storage='url'` **只保留列分支、不实现**（将来的逃逸阀）。源文 `tellurion:docs/design/qt-decoupling/strategy-asset-service-api.md` 的裁决记录。
-- ⚠️ **上表 `strategy_definitions` 那行列了 6 个新列，QT-41 ③-① 说的是 7 个**：多出来的是 `active_artifact_hash`，它**只在工单正文里出现，设计文档 §1.1 与本表都没有**。
-  两种收口方式（答「当前生效的是哪个字节」）：补列，或让 resolve 经 `strategy_artifacts.status='promoted'` 反查。
-  **这是待裁决，不是笔误**——登记与后果见 `docs/api-schema.md` §6.5 偏差 #1。
+- **A（对象存储 vs BYTEA，2026-10-21）**：本地栈 PostgreSQL `BYTEA`，**单 blob ≤ 8 MiB 且超限 fail-loud**（不静默截断、不落本地盘）；`storage='url'` **只保留列分支、不实现**（将来的逃逸阀）。源文 `tellurion:docs/design/qt-decoupling/strategy-asset-service-api.md` 的裁决记录。
+- **#1 新列 6 vs 7（2026-10-23）**：**补 `active_artifact_hash` 第 7 列**，并用 `CHECK ((active_version_hash IS NULL) = (active_artifact_hash IS NULL))`
+  钉住「要么都没有、要么都有」。理由：resolve 要能不查 artifact 行就回答「当前生效的是哪个字节」；靠 `status='promoted'` 反查在两工具链场景下不唯一。
+  裁决落 `docs/adr/0002-artifact-主键与生效字节的裁决.md`。
+- **artifact 主键（2026-10-23，同上 ADR）**：`PRIMARY KEY (strategy_id, artifact_hash)` + `UNIQUE (strategy_id, version_hash, toolchain)`。
+  同源码 × 两工具链 → 两行可分别追溯；同字节跨工具链不产生第二行（内容寻址优先，谁编译的以该行 `toolchain` 为准，
+  不允许同一份字节出现两条互相矛盾的「编译来源」）。
+
+## 6. 待定
+
+- **`version_hash` 的域标签不在 contracts**：`tellurion-contracts:engine/canonical.go` 只有 `run_spec_hash` / `dataset_snapshot_hash` /
+  `universe_hash` / `calendar_hash` / `adjustment_anchor_digests` / `params_hash` 六个域，没有 `strategy_version_hash`。
+  本仓暂在 `internal/asset/hash.go` 定义 `tellurion.strategy_version_hash.v1`。
+  **风险**：若将来 contracts 收编并改用别的字符串，所有历史 `version_hash` 全部失效；要么 contracts 以这个字符串为准收录，要么本仓保留为唯一 owner。
+- **同版本多工具链的 promote 语义**：当前 active 指针只记一个 `artifact_hash`（即「此刻生效的是哪份字节」），
+  「同版本另一工具链后来也 promote」会覆盖指针。是否需要「多内核各持一个 active」，取决于 NT 侧接入形态（未决 C）。

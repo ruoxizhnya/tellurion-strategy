@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-22
-verified-by: QT-41/QT-41b 的 M8 接口对表落定（api-schema.md §6）+ 开工前置幻影模板指针改指 §4.1
+last-verified: 2026-10-23
+verified-by: QT-41/QT-41b 首批实装施工记录落账（internal/asset + httpapi + compile + compilerjob + cmd）与未落项逐条登记
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -17,7 +17,7 @@ verified-by: QT-41/QT-41b 的 M8 接口对表落定（api-schema.md §6）+ 开�
 
 > **约定变更（2026-10-21）**：原「占位仓不写正式六字段任务单」作废——X 线任务单已展开为本仓正式任务（见下）。M5/M8 开工前置不变；实现仍未开工，开工前仍须过前置两条。
 
-### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ⬜（2026-10-21：A/E/F/G/H 五项已裁决，阻塞解除）
+### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地；剩余项见施工记录）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
@@ -34,7 +34,42 @@ verified-by: QT-41/QT-41b 的 M8 接口对表落定（api-schema.md §6）+ 开�
 > 另两条会直接误导第一行代码：**#3** `version_hash` 策略侧零实现、`ArtifactHash()` 生产路径零调用方；**#5** 设计的 9 个哨兵错误代码里一个都不存在（其中两个与既有 `ErrAbiVersionMismatch` / `ErrImportNotWhitelisted` 语义重叠，另造就是两处真相）。
 > 状态保持 ⬜ 未开工是对的，但前置已从「两项 + 一堆假设」收敛为「只剩 QT-05」。
 
-### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] ⬜（2026-10-21：D 已裁决，阻塞解除）
+> **施工记录（2026-10-23）**：
+>
+> **已交付**（`gofmt` / `go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿）：
+> - `internal/asset`：`Definition`(7 列含 `active_artifact_hash`) / `Version` / `Artifact` 模型与 `Validate()`；`VersionHash`
+>   （域 `tellurion.strategy_version_hash.v1`，6 输入：strategy_id / carrier / abi_version / scope / capability / entry / source）；
+>   `Verify`（五道门里的 Verify：storage=url 拒 → 空字节 → 8 MiB → size 一致 → sha256 → abi 可解析 → memory 上限 →
+>   imports 归一化 → wasm 白名单）；`WasmImports`（LEB128 解析 import section）；`ImportPolicyFor`（按 contracts
+>   `HostABIContracts()` 的 `Since` 派生白名单，不另造一张表）；`Store` 端口 + `Memory` 实现；`Migrations()`（5 条幂等 DDL）；
+>   `Service`（9 端点语义 + `Resolve` 三形态 ref + `Promote`/`Deprecate` 状态机 + build job 注册表）。
+> - `internal/httpapi`：标准库 `http.ServeMux` 的 9 个公开端点 + 1 个内部登记端点；严格解码（`DisallowUnknownFields` +
+>   `LimitReader` + 拒绝多对象）；`errorBody{error,code}` 与 22 个领域 wire code；`artifact` 端点 ETag / `X-Artifact-Hash` /
+>   immutable / 304。
+> - `internal/compile`：`Runner`（`-target=wasm-unknown` 精确 token 检查、env 白名单、64 KiB 日志截断、超时、超限 fail-loud）。
+> - `internal/compilerjob`：编译 → `artifact_hash` → 内部登记端点回填（hash 与 imports 双向自证）。
+> - `cmd/assetservice`（`127.0.0.1:8085`）/ `cmd/compiler`（读 job JSON、严格解码、stdout 回执）。
+> - 测试：`internal/asset`（服务语义 + DDL 形状 + 五道门）、`internal/httpapi`（9 端点全生命周期 + 20 条 wire code 表驱动 +
+>   幂等/歧义/撒谎字节）、`internal/compile`（真子进程假工具链，含 env 白名单泄露红线）、`internal/compilerjob`（真 Service + httptest）。
+> - 文档：`docs/api-schema.md` §1/§2 按实现重写；`docs/db-schema.md` §1/§4/§5/§6 更新；`docs/adr/0002-artifact-主键与生效字节的裁决.md`。
+>
+> **裁决落地**：偏差 #1 → 补 `active_artifact_hash` 第 7 列 + 双空 CHECK；artifact 主键 → `(strategy_id, artifact_hash)` +
+> `UNIQUE(strategy_id, version_hash, toolchain)`；偏差 #5 → 复用 contracts 既有哨兵，不另造 9 个；偏差 #6 → 补齐领域 wire code
+> 并删掉本服务不产生的 `abi_mismatch` / `job_not_found`。
+>
+> **未落项（不得当现状描述）**：
+> 1. **PG `Store` 实现 + 迁移执行入口**：当前只有 `Memory`；`asset.Migrations()` 已就绪但无启动时执行器（无 PgStore、无连接装配）。
+> 2. **build job 持久化**：job 只在进程内 registry，重启丢失；也无 `job_id` 查询端点。
+> 3. **E/F 裁决未实现**：内存 LRU + 本地磁盘内容寻址二级缓存、`latest` TTL 300s 均未落地（当前每次都回源）。
+> 4. **G 裁决未实现**：14/15 个内置策略登记为 `carrier=builtin` 未做（现状内置策略仍在 core）。
+> 5. **`storage='url'` 分支**：列保留、代码里显式 fail-closed 返回 `storage_unsupported`，未实现对象存储。
+> 6. **so 载体符号表校验**：`carrier=so` 目前只做体积/hash，未校验导出符号。
+> 7. **core 侧 Mount 门**：本仓不负责装载；五道门的 Mount 仍在 core 的 WASM host。
+> 8. **真 toolchain 镜像**：本机无 tinygo/wat2wasm，`internal/compile` 只用假工具链验证了执行器契约（`go build` 出的替身）。
+> 9. **`version_hash` 域标签不在 contracts**：本仓自定义字符串，见 `db-schema.md` §6 风险。
+> 10. **`Promote` 两步非原子**：更新 definition 指针与 artifact 状态分两次写；`Memory` 单锁内无问题，接 PG 后需事务。
+
+### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
@@ -49,6 +84,25 @@ verified-by: QT-41/QT-41b 的 M8 接口对表落定（api-schema.md §6）+ 开�
 > 本单的门禁结论：**编译管线今天不存在**（无 `cmd/compiler`、本机无 tinygo/wat2wasm、`staticcheck.CheckOrError` 返回匿名 error 不可检索），
 > 而 agent 侧 `pipeline.go:634 validateCompilation` 只是临时目录 `go build` 的**检查**、不产出字节 ⇒ **产不出 `artifact_hash`**。
 > 所以 QT-41b 的第一条产出物不是编译器，是**错误语义进 contracts**（③-④）——那要等 QT-05。D 裁决（本仓 `cmd/compiler`，不建第 13 仓）已由 ADR-027 §2.6.1 的修订承接，见 `tellurion-docs:docs/adr/adr-035-repo-inventory-and-naming.md` 附录 D。
+
+> **施工记录（2026-10-23）**：
+>
+> **已交付**：
+> - `internal/compile`：`Runner` 执行器 —— toolchain 名/版本/路径固定、`Args` 必须含精确 `-target=wasm-unknown`
+>   （near-miss 如 `-target=wasm-unknown-extra` 明确拒绝）、`EnvAllowlist` 白名单（父进程其余环境变量一律不传）、
+>   超时、`-o` 产物读取、64 KiB 日志截断、编译失败/无产物/产物超限各自 fail-loud。
+> - `internal/compilerjob`：`Job`（strategy_id / version_hash / carrier / abi_version / scope / entry / source）严格校验 →
+>   调 `Runner` → 算 `artifact_hash` → `POST /internal/strategies/{id}/artifacts` 回填（base64 字节 + hash 自证 + imports 自证）
+>   → 校验服务侧回显 hash 与服务端校验结果。
+> - `cmd/compiler`：读 job JSON（严格解码）、`-asset-url` / toolchain 参数、stdout 输出 JSON 回执。
+> - 与 QT-41 的分界：编译服务**不直连 DB**，只经内部 HTTP 端点登记（③-⑥ 要求）；五道门里的 Compile 在 Verify 之后、Mount 之前。
+> - 测试：`internal/compile/compile_test.go`（`TestMain` 里 `go build` 出假工具链，**不是 Skip**；env 泄露红线、超时、
+>   无产物、超限、日志截断、`-target` near-miss）、`internal/compilerjob/compilerjob_test.go`（真 Service + httptest 的
+>   成功/失败/服务撒谎/不可达）。
+>
+> **未落项**：真 TinyGo 镜像与工具链版本锁定（本机无 tinygo/wat2wasm，仅用替身验证执行器契约）；编译失败的错误族仍复用
+> 本仓 `asset.ErrCompileFailed` 等哨兵，**未进 contracts**（③-④ 的"进 contracts"要 QT-05 之后的契约发布，属于跨仓变更）；
+> 编译 job 的队列/重试/并发编排未做（当前一次 `cmd/compiler` 进程处理一个 job）。
 
 
 ---

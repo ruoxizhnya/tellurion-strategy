@@ -6,7 +6,7 @@
 
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
-**状态**：预留（S0 占位，触发式启动）——尚未启动，无实现
+**状态**：🔶 首批实装（2026-10-23）——`internal/asset` + `internal/httpapi` + `internal/compile` + `internal/compilerjob` + `cmd/assetservice` + `cmd/compiler` 已落地，9+1 端点跑在 `Memory` Store 上；PG Store、迁移执行入口、缓存与内置策略登记未落（清单见 `docs/TASKS.md` QT-41/41b 施工记录）。
 
 **今天的实现**：`core:pkg/strategy`（运行时 + 插件 + `SignalProvider`）+ `strategies` 表（定义）。本仓只收"资产"这一半，**运行时留在 core**。
 
@@ -45,10 +45,11 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | 待定（S2 后 `v0.1.0`） | `RunSpec` / `SignalSpec` / artifact 契约 |
-| `github.com/ruoxizhnya/tellurion-kit` | 待定（S2 后 `v0.1.0`） | 日志 / HTTP / 存储连接 |
+| `github.com/ruoxizhnya/tellurion-contracts` | `v0.1.0`（已发 tag，非伪版本） | 实际使用 `engine` 子包（package 名仍是 `contracts`）：`StrategyRef` / `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵 |
+| `github.com/ruoxizhnya/tellurion-kit` | **未引入** | 日志 / HTTP / 存储连接。当前实现用标准库；引入前先登记到本表 |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
+> 本仓**禁止** `replace` 指向仓外路径、**禁止**提交 `go.work` / `go.work.sum` —— 单仓必须独立可构建（`go build ./...` 不依赖别的仓源码）。
 
 ## 5. 活在哪、文档在哪
 

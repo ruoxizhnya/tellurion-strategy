@@ -1,13 +1,17 @@
 ---
 status: active
-last-verified: 2026-10-22
-verified-by: QT-41/41b 接口对表（§6）——9 端点 + 五道门逐项签名/错误语义/版本策略，回 core 源码取证的七条前提偏差
+last-verified: 2026-10-23
+verified-by: QT-41/QT-41b 首批实装（internal/asset + internal/httpapi + internal/compile + internal/compilerjob）逐端对表
 ---
 
 # API Schema — tellurion-strategy
 
-> **实现状态（2026-10-20）**：本仓目前**只有占位 `doc.go`，没有任何 handler**——下列端点**全部未实现**。
-> 本文件是**目标契约**，不是现状说明书；开工顺序见 `docs/TASKS.md` 的「施工序」。
+> **实现状态（2026-10-23）**：9 个公开端点 + 1 个内部登记端点已由 `internal/httpapi` 落地，
+> 语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。**未落项**：PG `Store` 实现与迁移执行入口、
+> build job 持久化（当前是进程内 registry）、`storage=url` 分支、latest TTL 与两级缓存（F/E 裁决的实现）、
+> 14/15 内置策略登记（G 裁决）、core 侧 Mount 门。未落项逐条登记在 `docs/TASKS.md` QT-41/41b 的施工记录里。
+>
+> 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 
 > **契约地位**：HTTP。**写侧 7 端点给作者/AI/CI，读侧 2 端点给引擎** —— 引擎只用那两个，其余端点它不该碰。
 > 本文件是**本仓对外接口的唯一真相源**。代码与它不一致时，先判断谁错：契约错 → 改本文 + 立 ADR；实现错 → 改代码。
@@ -19,29 +23,64 @@ verified-by: QT-41/41b 接口对表（§6）——9 端点 + 五道门逐项签�
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| POST | `/api/strategies` | 创建定义（carrier / abi_version / **scope** / capability / entry） |
-| PUT | `/api/strategies/{id}/source` | 上传源码 → 算 `version_hash` 并登记版本 |
-| POST | `/api/strategies/{id}/build` | 触发编译（异步 job）→ artifact + `artifact_hash` |
-| POST | `/api/strategies/{id}/versions/{hash}/validate` | 静态校验（imports 白名单 / 体积 / 内存上限） |
-| POST | `/api/strategies/{id}/versions/{hash}/promote` | 标为可用（写 `active_version_hash`） |
-| POST | `/api/strategies/{id}/versions/{hash}/deprecate` | 下线（不删，历史回测仍可解析） |
-| GET | `/api/strategies/{id}/versions` | 版本列表（status / hash / toolchain） |
+| POST | `/api/strategies` | 创建定义（carrier / abi_version / **scope** / capability / entry）→ 201 `{"id": ...}` |
+| PUT | `/api/strategies/{id}/source` | 上传源码 → 算 `version_hash` 并登记版本 → 200 `{"version_hash": ...}` |
+| POST | `/api/strategies/{id}/build` | 触发编译（异步 job）→ artifact + `artifact_hash` → 202 `{"job_id": ...}` |
+| POST | `/api/strategies/{id}/versions/{hash}/validate` | 静态校验（imports 白名单 / 体积 / 内存上限）→ 200 artifact 视图 |
+| POST | `/api/strategies/{id}/versions/{hash}/promote` | 标为可用（写 `active_version_hash` / `active_artifact_hash`）→ 200 artifact 视图 |
+| POST | `/api/strategies/{id}/versions/{hash}/deprecate` | 下线（不删，历史回测仍可解析）→ 200 artifact 视图 |
+| GET | `/api/strategies/{id}/versions` | 版本列表（status / hash / toolchain）；无版本返回 `[]`（不是 `null`） |
+
+> `validate` / `promote` / `deprecate` / `artifact` 接受可选 body `{"toolchain": "..."}`（`artifact` 用同名 query 参数）；
+> 同一版本有多个工具链产物且未指定 toolchain 时返回 `409 ambiguous_artifact`，**不替调用方猜**。
 
 ### 读侧（**引擎只用这两个**）
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/api/strategies/{id}/resolve?ref={hash\|latest}` | 解析 `strategy_ref` → 元数据（含 `artifact_hash` / `scope` / `capability`） |
-| GET | `/api/strategies/{id}/versions/{hash}/artifact` | 下载字节码（响应头 `X-Artifact-Hash`，支持 `ETag`） |
+| GET | `/api/strategies/{id}/resolve?ref={hash\|latest}` | 解析 `strategy_ref` → 元数据（含 `artifact_hash` / `scope` / `capability` / `imports`） |
+| GET | `/api/strategies/{id}/versions/{hash}/artifact` | 下载字节码（响应头 `X-Artifact-Hash`，支持 `ETag` / `If-None-Match` → 304） |
+
+> `ref` 三形态：空 / `latest` → definition 的 active；64 位小写 hex → 先按 `artifact_hash` 查、查不到再按
+> `version_hash` 解析到该版本当前 promoted 的 artifact（**回写实际 `artifact_hash`**）；`id@hash` → id 必须与路径一致。
+
+### 内部面（编译服务专用，不经公网暴露）
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/internal/strategies/{id}/artifacts` | 编译服务回填 artifact（base64 字节 + hash 自证 + imports 自证）→ 201 artifact 视图 |
 
 ## 2. 错误码与 fail-closed 语义
 
+响应体统一 `{"error": "...", "code": "..."}`；`code` 是**领域码**，前端/引擎按它分支。
+
 | 情况 | 返回 | 调用方行为 |
 |---|---|---|
+| 策略不存在 | 404 + `strategy_not_found` | 拒绝 |
+| 版本不存在 | 404 + `version_not_found` | 拒绝（**不回退 latest**） |
 | 无 active 版本 | 404 + `no_active_version` | fail-closed 拒绝跑 |
-| artifact 校验不过 | 409 + `artifact_invalid` | 不许执行 |
-| `abi_version` 与内核能力不匹配 | 409 + `abi_mismatch` | 拒绝，不降级 |
-| hash 不存在 | 404 + `version_not_found` | 拒绝（**不回退 latest**） |
+| 版本没有该工具链产物 | 404 + `artifact_not_found` | 拒绝 |
+| 未指定 toolchain 而存在多行 | 409 + `ambiguous_artifact` | 由调用方显式选定 |
+| 重复创建 | 409 + `strategy_exists` | 拒绝 |
+| 同字节被登记成不同内容 / 同版本同工具链第二份产物 | 409 + `conflict` | 拒绝 |
+| artifact 校验不过（hash 不符 / 元数据撒谎 / 体积内存越界） | 409 + `artifact_invalid` | 不许执行 |
+| import 越界 | 409 + `imports_not_allowed` | 不许执行 |
+| 状态机不允许的跃迁 | 409 + `invalid_transition` | 拒绝 |
+| `storage=url`（未实现分支） | 409 + `storage_unsupported` | 拒绝 |
+| 编译失败 | 409 + `compile_failed` | 拒绝 |
+| 源码 / 产物超限 | 413 + `payload_too_large` | 拒绝 |
+| 编译服务未配置 | 503 + `compile_unavailable` | 拒绝 |
+| 载体不支持 | 400 + `unsupported_carrier` | 拒绝 |
+| `abi_version` 不在 `on_bar/1\|2` | 400 + `invalid_abi_version` | 拒绝 |
+| `scope` 非法 / v1 声明 market | 400 + `invalid_scope` | 拒绝 |
+| 源码为空 | 400 + `source_required` | 拒绝 |
+| toolchain 与配置不符 | 400 + `unsupported_toolchain` | 拒绝 |
+| 请求体 / 参数 / 定义不合法 | 400 + `invalid_request` | 拒绝 |
+| 其它 | 500 + `internal`（**不吐内部原文**） | 服务端问题 |
+
+> **`abi_mismatch` 不在本服务产生**：本服务没有内核能力集，`abi_version` 与内核的不匹配由**引擎侧**装载门判定
+> （`tellurion-contracts:engine` 的 `ErrAbiVersionMismatch`）。资产服务只回答「这个 abi_version 是否可解析、是否与字节自证相符」。
+> **`job_not_found` 也不在对外面**：`build` 返回的 `job_id` 当前只在进程内可查（未做查询端点，见未落项）。
 
 ## 3. 幂等性与重试
 
