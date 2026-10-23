@@ -23,6 +23,10 @@ go test ./...
 - 这三条是 R1/R2 的判据：**单独 checkout 就能绿**。
 - 若某一步需要别的仓的源码目录才过，那是**边界画错了**——停下来修边界，**不要**加 `replace ../xxx` 绕过。
 - 本机同时改多个仓时可用 `go.work` 联调，但**它不入库**（`.gitignore` 已挡）。
+- 可选集成测试（无外部条件时自动 skip）：
+  - PG：`STRATEGY_TEST_DSN='postgres://postgres:postgres@127.0.0.1:5432/tellurion_strategy_test?sslmode=disable' go test ./internal/asset -count=1`
+  - 真工具链：`STRATEGY_TINYGO_IMAGE=tinygo/tinygo:0.34.0 go test ./internal/compile -run TestCompile_RealTinyGoImage -v`
+    （证据与复现步骤见 `docs/evidence/QT-41b-tinygo-0.34.0.md`）
 
 ## 3. 边界（硬约束）
 
