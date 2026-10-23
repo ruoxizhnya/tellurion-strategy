@@ -169,12 +169,23 @@ func (c *Cache) Put(hash string, bytes []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("asset: cache dir: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, bytes, 0o600); err != nil {
+	// 唯一临时名：同一 hash 的并发写入不能互相覆盖临时文件。
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("asset: create cache temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(bytes); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("asset: write cache entry: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("asset: close cache entry: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("asset: commit cache entry: %w", err)
 	}
 	c.mu.Lock()
