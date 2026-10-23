@@ -47,6 +47,7 @@ go test ./...
 |---|---|---|
 | `github.com/ruoxizhnya/tellurion-contracts` | `v0.1.0`（已发 tag，非伪版本） | 实际使用 `engine` 子包（package 名仍是 `contracts`）：`StrategyRef` / `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵 |
 | `github.com/ruoxizhnya/tellurion-kit` | **未引入** | 日志 / HTTP / 存储连接。当前实现用标准库；引入前先登记到本表 |
+| `github.com/stretchr/testify` | `v1.11.1` | **仅测试**断言（与 contracts 仓同版本）；随 QT-41/41b 测试引入，2026-10-23 补登记 |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
 > 本仓**禁止** `replace` 指向仓外路径、**禁止**提交 `go.work` / `go.work.sum` —— 单仓必须独立可构建（`go build ./...` 不依赖别的仓源码）。

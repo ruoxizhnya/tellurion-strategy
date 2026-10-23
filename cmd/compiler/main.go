@@ -43,6 +43,7 @@ func run(args []string) error {
 	name := fs.String("toolchain-name", "", "toolchain name, e.g. tinygo (required)")
 	version := fs.String("toolchain-version", "", "pinned toolchain version (required)")
 	path := fs.String("toolchain-path", "", "absolute path to the toolchain binary (required)")
+	lockPath := fs.String("toolchain-lock", "", "path to toolchains.lock; name+version must be pinned and the binary sha256 must match (required)")
 	memoryLimit := fs.Int64("memory-limit", asset.MaxMemoryLimitBytes, "wasm memory limit in bytes")
 	timeout := fs.Duration("timeout", 5*time.Minute, "compile timeout")
 	var toolchainArgs repeatableFlag
@@ -56,10 +57,24 @@ func run(args []string) error {
 		name  string
 		value string
 	}{{"job", *jobPath}, {"asset-url", *assetURL}, {"toolchain-name", *name},
-		{"toolchain-version", *version}, {"toolchain-path", *path}} {
+		{"toolchain-version", *version}, {"toolchain-path", *path}, {"toolchain-lock", *lockPath}} {
 		if strings.TrimSpace(required.value) == "" {
 			return fmt.Errorf("-%s is required", required.name)
 		}
+	}
+
+	// 锁先于一切编译工作：清单里没有这个 名字+版本，或二进制 sha256 对不上，
+	// 一个 job 都不许跑（无锁不编译）。
+	lock, err := compile.LoadLock(*lockPath)
+	if err != nil {
+		return err
+	}
+	pin, err := lock.Pin(*name, *version)
+	if err != nil {
+		return err
+	}
+	if err := pin.VerifyBinary(*path); err != nil {
+		return err
 	}
 
 	raw, err := os.ReadFile(*jobPath)

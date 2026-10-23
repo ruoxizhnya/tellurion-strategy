@@ -100,9 +100,10 @@ verified-by: QT-41/QT-41b 首批实装施工记录落账（internal/asset + http
 >   无产物、超限、日志截断、`-target` near-miss）、`internal/compilerjob/compilerjob_test.go`（真 Service + httptest 的
 >   成功/失败/服务撒谎/不可达）。
 >
-> **未落项**：真 TinyGo 镜像与工具链版本锁定（本机无 tinygo/wat2wasm，仅用替身验证执行器契约）；编译失败的错误族仍复用
+> **未落项**：真 TinyGo 镜像（本机无 tinygo/wat2wasm，仅用替身验证执行器契约）。**工具链版本锁定已于 2026-10-23 落可执行形态**——`internal/compile/lock.go` 的 `toolchains.lock`（名字+版本+二进制 sha256；`cmd/compiler -toolchain-lock` 必填，无锁不编译、二进制被换即拒），真镜像灌数时把它的 sha256 写进部署侧锁文件即可；编译失败的错误族仍复用
 > 本仓 `asset.ErrCompileFailed` 等哨兵，**未进 contracts**（③-④ 的"进 contracts"要 QT-05 之后的契约发布，属于跨仓变更）；
 > 编译 job 的队列/重试/并发编排未做（当前一次 `cmd/compiler` 进程处理一个 job）。
+> 另：上一批提交（`832764b`）漏了 `go.mod` 的 testify `require`——新 checkout 的 `go test` 必红，本批 tidy 修正并补 AGENTS.md §4 登记。
 
 
 ---
