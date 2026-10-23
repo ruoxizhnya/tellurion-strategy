@@ -174,7 +174,7 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 > **HTTP wire code 零变化**（`compile_failed` / `compile_unavailable` / `payload_too_large` 原样）；`docs/api-schema.md` §2 补了哨兵来源。
 > 所有调用点（`internal/compile` 的包装、`httpapi.classify`、`compilerjob.DefaultRetryable`）仍写 `asset.Err*`，行为不变。
 > **③ ⛔ `version_hash` 对齐（未做，按派工要求不动）**：G0D-C3 + 裁-01 未落定；契约仓 `grep strategy_version_hash`
-> 只有 `provenance.go` 的**输入字段**，没有 `DomainStrategyVersionHash` 域标签。按派工「未裁前不删现有 `DomainStrategyVersionHash`、
+> 只有 `provenance.go` 的**输入字段**，没有 `DomainStrategyVersionHash` 域标签（已下载的 v0.4.0 模块实测仍如此）。按派工「未裁前不删现有 `DomainStrategyVersionHash`、
 > 也不在契约仓另写一份」，本批 `internal/asset/hash.go` 零改动。
 >
 > **测试（本机实测）**：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；
