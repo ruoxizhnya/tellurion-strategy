@@ -41,6 +41,20 @@ type Compiler interface {
 	Compile(ctx context.Context, req CompileRequest) (CompileResult, error)
 }
 
+// BuildDispatcher 是编译端口的**可选**能力：实现了它的 Compiler 不再在资产
+// 服务进程内执行 Compile，而是把作业派发给独立的编译进程，由对方经内部端点
+// 回写 running / 终态。不实现它的 Compiler 仍走原来的本地 runBuild 路径。
+type BuildDispatcher interface {
+	DispatchBuild(ctx context.Context, req DispatchRequest) error
+}
+
+// DispatchRequest 是一次跨进程派发：JobID 是已落库的 queued 作业 id，
+// CompileRequest 是编译所需的全部输入。
+type DispatchRequest struct {
+	JobID string
+	CompileRequest
+}
+
 // Options 是服务的装配面。
 type Options struct {
 	Store            Store
@@ -170,6 +184,7 @@ type BuildJob struct {
 	Toolchain    string     `json:"toolchain"`
 	State        string     `json:"state"`
 	ArtifactHash string     `json:"artifact_hash,omitempty"`
+	ErrorCode    string     `json:"error_code,omitempty"`
 	Error        string     `json:"error,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
@@ -182,6 +197,22 @@ const (
 	JobSucceeded = "succeeded"
 	JobFailed    = "failed"
 )
+
+// 作业失败归因码（wire `error_code`）：机器可读，调用方按它分支，不必解析 error 文案。
+const (
+	ErrorCodeCompileFailed      = "compile_failed"
+	ErrorCodeCompileUnavailable = "compile_unavailable"
+	ErrorCodePayloadTooLarge    = "payload_too_large"
+	ErrorCodeArtifactInvalid    = "artifact_invalid"
+)
+
+// BuildJobReport 是编译进程经内部端点回写的一次状态变更。
+type BuildJobReport struct {
+	State        string `json:"state"`
+	ArtifactHash string `json:"artifact_hash"`
+	ErrorCode    string `json:"error_code"`
+	Error        string `json:"error"`
+}
 
 // SubmitBuild 触发异步编译并返回 job_id（202）。
 func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain string) (BuildJob, error) {
@@ -226,6 +257,17 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 		Source:           version.Source,
 		MemoryLimitBytes: s.memoryLimitBytes,
 	}
+	// 可选派发面：编译器能跨进程派发时，作业状态由对方经内部端点回写；
+	// 派发不出去（找不到可执行文件等）就把刚落的 queued 作业收口成 failed，
+	// 端点仍按「编译服务不可用」返回 503，与「编译失败」可区分。
+	if dispatcher, ok := s.compiler.(BuildDispatcher); ok {
+		if err := dispatcher.DispatchBuild(ctx, DispatchRequest{JobID: job.ID, CompileRequest: req}); err != nil {
+			s.setJobState(job.ID, JobFailed, "", ErrorCodeCompileUnavailable, err.Error())
+			return BuildJob{}, fmt.Errorf("%w: dispatch build: %v", ErrCompileUnavailable, err)
+		}
+		return job, nil
+	}
+
 	go s.runBuild(job.ID, req)
 
 	return job, nil
@@ -233,14 +275,14 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 
 // runBuild 执行一次编译并落 artifact 行；失败写回 job 状态。
 func (s *Service) runBuild(jobID string, req CompileRequest) {
-	s.setJobState(jobID, JobRunning, "", "")
+	s.setJobState(jobID, JobRunning, "", "", "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.compileTimeout)
 	defer cancel()
 
 	res, err := s.compiler.Compile(ctx, req)
 	if err != nil {
-		s.setJobState(jobID, JobFailed, "", fmt.Sprintf("%v", err))
+		s.setJobState(jobID, JobFailed, "", ErrorCodeCompileFailed, fmt.Sprintf("%v", err))
 		return
 	}
 	artifact := Artifact{
@@ -262,25 +304,25 @@ func (s *Service) runBuild(jobID string, req CompileRequest) {
 	}
 	if err := Verify(artifact, req.Entry); err != nil {
 		// 编译产出的字节过不了自己的门 ⇒ 不落库，作业失败可检索。
-		s.setJobState(jobID, JobFailed, "", fmt.Sprintf("%v", err))
+		s.setJobState(jobID, JobFailed, "", ErrorCodeArtifactInvalid, fmt.Sprintf("%v", err))
 		return
 	}
 	if err := normalizeImports(&artifact); err != nil {
-		s.setJobState(jobID, JobFailed, "", fmt.Sprintf("%v", err))
+		s.setJobState(jobID, JobFailed, "", ErrorCodeArtifactInvalid, fmt.Sprintf("%v", err))
 		return
 	}
 	saved, err := s.store.SaveArtifact(ctx, artifact)
 	if err != nil {
-		s.setJobState(jobID, JobFailed, "", fmt.Sprintf("%v", err))
+		s.setJobState(jobID, JobFailed, "", ErrorCodeArtifactInvalid, fmt.Sprintf("%v", err))
 		return
 	}
 	if s.cache != nil {
 		_ = s.cache.Put(saved.ArtifactHash, saved.Bytes)
 	}
-	s.setJobState(jobID, JobSucceeded, saved.ArtifactHash, "")
+	s.setJobState(jobID, JobSucceeded, saved.ArtifactHash, "", "")
 }
 
-func (s *Service) setJobState(jobID, state, artifactHash, errMsg string) {
+func (s *Service) setJobState(jobID, state, artifactHash, errorCode, errMsg string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	job, err := s.store.GetJob(ctx, jobID)
@@ -293,6 +335,7 @@ func (s *Service) setJobState(jobID, state, artifactHash, errMsg string) {
 	if artifactHash != "" {
 		job.ArtifactHash = artifactHash
 	}
+	job.ErrorCode = errorCode
 	job.Error = errMsg
 	if state == JobSucceeded || state == JobFailed {
 		now := s.now()
@@ -300,6 +343,89 @@ func (s *Service) setJobState(jobID, state, artifactHash, errMsg string) {
 	}
 	if err := s.store.UpdateJob(ctx, job); err != nil {
 		slog.Error("build job: persist state", "job_id", jobID, "error", err)
+	}
+}
+
+// ReportBuildJob 是编译进程回写作业状态的内部入口。
+//
+// 归属校验先于一切：job 不存在或不属于路径 id 一律 ErrJobNotFound（404），
+// 不跨策略枚举。合法转移：queued→running→succeeded|failed，queued 直达终态，
+// 同终态重复上报幂等；终态不可回退。succeeded 必须给出已登记且与作业
+// (version, toolchain) 一致的 artifact；failed 的 error_code 缺省 compile_failed。
+func (s *Service) ReportBuildJob(ctx context.Context, strategyID, jobID string, report BuildJobReport) (BuildJob, error) {
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return BuildJob{}, err
+	}
+	if job.StrategyID != strategyID {
+		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, jobID)
+	}
+	state := strings.TrimSpace(report.State)
+	switch state {
+	case JobRunning, JobSucceeded, JobFailed:
+	default:
+		return BuildJob{}, fmt.Errorf("%w: unknown build state %q", ErrInvalidParameter, report.State)
+	}
+	if state == job.State && (state == JobSucceeded || state == JobFailed) {
+		return job, nil
+	}
+	if !allowedJobTransition(job.State, state) {
+		return BuildJob{}, fmt.Errorf("%w: job %s is %s, cannot report %s",
+			ErrInvalidTransition, jobID, job.State, state)
+	}
+
+	switch state {
+	case JobRunning:
+		job.State = state
+	case JobSucceeded:
+		hash := strings.TrimSpace(report.ArtifactHash)
+		if !isLowerHex64(hash) {
+			return BuildJob{}, fmt.Errorf("%w: succeeded job requires a 64-hex artifact_hash", ErrInvalidArtifact)
+		}
+		artifact, err := s.store.GetArtifact(ctx, strategyID, hash)
+		if err != nil {
+			if errors.Is(err, ErrArtifactNotFound) {
+				return BuildJob{}, fmt.Errorf("%w: artifact %s is not registered", ErrInvalidArtifact, hash)
+			}
+			return BuildJob{}, err
+		}
+		if artifact.VersionHash != job.VersionHash || artifact.Toolchain != job.Toolchain {
+			return BuildJob{}, fmt.Errorf("%w: artifact %s belongs to (%s, %s), job is (%s, %s)",
+				ErrInvalidArtifact, hash, artifact.VersionHash, artifact.Toolchain, job.VersionHash, job.Toolchain)
+		}
+		now := s.now()
+		job.State = state
+		job.ArtifactHash = hash
+		job.ErrorCode = ""
+		job.Error = ""
+		job.FinishedAt = &now
+	case JobFailed:
+		code := strings.TrimSpace(report.ErrorCode)
+		if code == "" {
+			code = ErrorCodeCompileFailed
+		}
+		now := s.now()
+		job.State = state
+		job.ArtifactHash = ""
+		job.ErrorCode = code
+		job.Error = report.Error
+		job.FinishedAt = &now
+	}
+	if err := s.store.UpdateJob(ctx, job); err != nil {
+		return BuildJob{}, err
+	}
+	return job, nil
+}
+
+// allowedJobTransition 是 build job 的状态机（queued 可直达终态，终态只读）。
+func allowedJobTransition(from, to string) bool {
+	switch from {
+	case JobQueued:
+		return to == JobRunning || to == JobSucceeded || to == JobFailed
+	case JobRunning:
+		return to == JobRunning || to == JobSucceeded || to == JobFailed
+	default:
+		return false
 	}
 }
 

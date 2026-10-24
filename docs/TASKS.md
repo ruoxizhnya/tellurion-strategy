@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: QT-41 G4 收口 + QT-41b 真工具链落账 + G5 ①编译作业队列/重试/限并发 ②错误族切 contracts 别名 ③`version_hash` 收编 contracts v0.5.0
+last-verified: 2026-10-25
+verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -107,7 +107,7 @@ verified-by: QT-41 G4 收口 + QT-41b 真工具链落账 + G5 ①编译作业队
 > **余项（不属于本单验收，未做也不冒充已完成）**：`storage='url'` 分支、`carrier=external` 的 hash 语义单独立文、
 > core 侧 Mount 门。~~`version_hash` 域标签迁 contracts~~ 已随 `v0.5.0` 收编（G5 ③）。
 
-### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地；2026-10-24 真 TinyGo 0.34.0 已接）
+### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] ✅（2026-10-22 开工，2026-10-23 首批实装落地；2026-10-24 真 TinyGo 0.34.0 已接；2026-10-25 余项由 QT-41c 收口）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
 
@@ -201,10 +201,69 @@ verified-by: QT-41 G4 收口 + QT-41b 真工具链落账 + G5 ①编译作业队
 > ② 的破坏验证：把 `ErrCompileFailed` 别名改回本地 `errors.New(...)` → `TestCompileErrorFamilyIsContractAlias`（asset）与
 > `TestClassifyCompileSentinelsFromContracts`（httpapi，契约错误掉进 500 internal）双红，EXIT=1；逐字节还原后复绿（EXIT=0）。
 >
-> **余项（如实登记，不在本单冒充完成）**：队列记录与 `strategy_build_jobs` 的**跨进程状态回写**仍缺 —— 资产服务没有
-> 「编译进程上报 queued/running/终态」的内部端点，`POST /api/strategies/{id}/build` 今天仍要求资产服务进程内有编译器
-> （`Options.Compiler` 在 `cmd/assetservice` 未装配，所以该端点恒 503 `compile_unavailable`）。补这条边要动 `internal/httpapi` +
-> `internal/asset`，超出 G5 ① 的「internal/compilerjob + cmd/compiler」边界，另立单。
+> **余项（2026-10-25 更新）**：~~队列记录与 `strategy_build_jobs` 的跨进程状态回写~~ —— **✅ 已由 QT-41c 收口**：
+> 内部端点 `POST /internal/strategies/{id}/builds/{job_id}` + `cmd/assetservice -compiler-bin` 装配外部编译进程 +
+> `internal/compilerclient` 派发 + `compilerjob.Queue` 上报 running/终态。`POST /api/strategies/{id}/build` 不再恒 503
+> （装配后 202；未装配仍是 503 `compile_unavailable`，与编译失败可区分）。本单其他非目标不动：`storage='url'` 分支、
+> `carrier=external` 的 hash 语义单独立文、core 侧 Mount 门。
+
+### QT-41c · X2 编译链路跨进程闭环（状态回写 + assetservice 装配）[P1] ✅（2026-10-25 收口 QT-41b 唯一余项）
+
+- **① 目标**：编译链路跨进程闭环——`POST /api/strategies/{id}/build` 返回 202 + `job_id`；独立 `cmd/compiler`
+  进程执行编译并经内部端点回写 `running` / 终态；`GET .../builds/{job_id}` 能看到 `queued → running → succeeded | failed`
+  全程；失败带机器可读 `error_code`；未装配编译器时仍是 503 `compile_unavailable`，与「编译失败」可区分。
+- **② 上下文**：QT-41b 的余项（队列记录与 `strategy_build_jobs` 跨进程状态回写、`Options.Compiler` 未装配）；
+  契约 pin `contracts v0.5.0`（编译四哨兵不改）。
+- **③ 要求**：内部状态回写端点（归属校验 / 状态机 / succeeded 必须指向同 `(strategy, version, toolchain)` 的
+  已登记 artifact / failed 的 `error_code` 缺省 `compile_failed`）；`BuildJob.error_code` + 可重入 ALTER；
+  可选 `BuildDispatcher` 派发面；`compilerjob.StatusReporter` 与 `Queue` 上报；`internal/compilerclient` 进程派发；
+  `cmd/assetservice -compiler-bin` 装配；HTTP wire code 变化同步 `docs/api-schema.md` §2/§6。
+- **④ 约束与非目标**：不改 contracts；不建真 TinyGo 测试（用 fake ProcessRunner / fake 编译进程）；
+  不改 `Compiler` 既有语义（派发是**可选**接口）；`storage=url`、`carrier=external`、core Mount 门不动。
+- **⑤ 验收**：httpapi 内部端点全路径（running/成功/failed/跨策略 404/非法转移/缺 artifact 409/同终态幂等）；
+  asset 派发不跑本地 Compile、派发失败 503 + job failed；compilerjob 上报 running/终态与四类归因码、空 job_id 不上报；
+  compilerclient 捕获 job JSON 与全套参数、启动失败 503、非零退出补报 failed；cmd/assetservice 装配在空/齐/缺项三态正确。
+- **⑥ 边界**：只做资产服务 ↔ 编译进程这一条边；不直连 DB、不 promote。
+
+> **完成记录（2026-10-25）**：
+>
+> **落点**：
+> - `internal/asset/service.go`：`BuildJob.ErrorCode`（`json:"error_code,omitempty"`）、`BuildJobReport`、
+>   四个 `ErrorCode*` 常量、可选 `BuildDispatcher` / `DispatchRequest`、`ReportBuildJob`（归属 / 状态机 / artifact 校验）、
+>   `SubmitBuild` 派发分支（派发失败把 queued 收口为 `failed` + `compile_unavailable`，端点仍 503）。
+> - `internal/asset/ddl.go`：末尾一条可重入
+>   `ALTER TABLE strategy.strategy_build_jobs ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT ''`；
+>   已落地语句未改。`internal/asset/pgstore.go` 的 Save/Update/Get 同步 `error_code`。
+> - `internal/httpapi/api.go`：`POST /internal/strategies/{id}/builds/{job_id}`（复用既有 wire code：
+>   `job_not_found` / `invalid_transition` / `artifact_invalid` / `invalid_request`；**无新增码**）。
+> - `internal/compilerjob/status.go`（`StatusReporter` + `ErrorCodeFor`）、`compilerjob.go`（`Config.Reporter`）、
+>   `queue.go`（首次尝试前上报 running、终态上报；running 上报失败按可重试处理且不占编译尝试次数；
+>   终态上报失败只记日志、不改判）。
+> - `internal/compilerclient/`：实现 `asset.Compiler` + `asset.BuildDispatcher`；写临时 job JSON（含 `job_id`），
+>   启动 `cmd/compiler`，传齐 `-job/-asset-url/-toolchain-*/ -memory-limit/-timeout/-workers 1/-max-attempts/-retry-backoff/-arg/-env`；
+>   `ProcessRunner` 可注入；启动失败映射 `ErrCompileUnavailable`；进程非零退出先查服务侧状态、未终态才补报 failed（幂等）。
+> - `cmd/compiler/main.go`：装配 `StatusReporter`（用已有 `-asset-url`）。
+> - `cmd/assetservice/main.go` + `compiler.go`：`-compiler-bin`（空 = 不装配）+ asset-url / toolchain 五参 /
+>   timeout / max-attempts / retry-backoff / repeatable `-arg`、`-env`；缺项启动期 fail-loud；启动日志区分
+>   `external (cmd/compiler)` 与 `disabled`。
+> - 文档：`db-schema.md`（列 + ALTER 迁移）、`api-schema.md`（内部端点 / 状态机 / error_code / §6 更新）、
+>   `dataflow.md`（真实跨进程链路）、`ARCHITECTURE.md`（包布局 + 依赖方向）、`AGENTS.md` §1。
+>
+> **验收证据（本机实测）**：
+> - 新测试：`internal/httpapi/report_test.go`（全路径 4 个用例）、`internal/asset/dispatch_test.go`（派发不本地编译 /
+>   派发失败收口 / 状态机表）、`internal/compilerjob/reporter_test.go`（StatusReporter wire、四类归因码、
+>   Queue running/终态、空 job_id 不上报、running 上报重试不占尝试、终态上报失败不改判）、
+>   `internal/compilerclient/compilerclient_test.go`（job JSON + 全套参数 / 启动失败 / 非零退出补报 / 已终态不补报）、
+>   `cmd/assetservice/compiler_test.go`（装配三态）。
+> - 门禁：`gofmt -l .` 空、`go build ./...`、`go vet ./...`、`go test ./... -count=1` 全绿（`cmd/compiler` 的
+>   fake 工具链用例真实 `go build`，不是 Skip；PG / 真 TinyGo 镜像腿无 `STRATEGY_TEST_DSN` / 镜像时按设计 skip）。
+> - **破坏验证**：把 `SubmitBuild` 的 dispatcher 分支临时改成 `ok && false`（强制走本地 `runBuild`）→
+>   `go test ./internal/asset -run 'TestSubmitBuild_' -count=1` **EXIT=1**，红在
+>   `TestSubmitBuild_DispatchesWithoutLocalCompile: DispatchBuild calls = 0, want 1` 与
+>   `TestSubmitBuild_DispatchFailureMarksJobFailed: err = <nil>, want ErrCompileUnavailable`；逐字节还原后同命令 **EXIT=0**。
+>
+> **如实登记**：`storage='url'`、`carrier=external` hash 语义、core 侧 Mount 门仍是非目标/跨仓；本次未新增 ADR
+> （只在 `cmd/assetservice` ↔ `internal/compilerclient` 之间加了一条既有端口方向内的边，无实质分层变化）。
 
 
 ---

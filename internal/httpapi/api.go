@@ -50,8 +50,10 @@ func New(svc *asset.Service) (*API, error) {
 	a.mux.HandleFunc("GET /api/strategies/{id}/resolve", a.resolve)
 	a.mux.HandleFunc("GET /api/strategies/{id}/versions/{hash}/artifact", a.downloadArtifact)
 
-	// 内部面：编译服务回填 artifact。只登记、不 promote（promote 是人的闸门）。
+	// 内部面：编译服务回填 artifact / 回写 build job 状态。只登记、不 promote
+	// （promote 是人的闸门）；状态回写也只认作业自己的策略归属。
 	a.mux.HandleFunc("POST /internal/strategies/{id}/artifacts", a.registerArtifact)
+	a.mux.HandleFunc("POST /internal/strategies/{id}/builds/{job_id}", a.reportBuildJob)
 	return a, nil
 }
 
@@ -282,6 +284,23 @@ func (a *API) registerArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, artifactView(artifact))
+}
+
+// reportBuildJob 是编译进程的状态回写端点：queued → running → succeeded | failed。
+//
+// 归属不符一律 404 job_not_found（不跨策略枚举）；非法转移 409 invalid_transition；
+// succeeded 必须指向同一 (strategy, version, toolchain) 已登记的 artifact。
+func (a *API) reportBuildJob(w http.ResponseWriter, r *http.Request) {
+	var report asset.BuildJobReport
+	if !decodeJSON(w, r, maxJSONBody, &report) {
+		return
+	}
+	job, err := a.svc.ReportBuildJob(r.Context(), r.PathValue("id"), r.PathValue("job_id"), report)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 // ─── 编解码与错误出口 ──────────────────────────────────────────

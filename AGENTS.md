@@ -7,10 +7,12 @@
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
 **状态**：🔶 G4 落地（2026-10-24）——`internal/asset`（Memory + PG Store、启动迁移、两级缓存、latest TTL、job 持久化、
-14 个内置策略登记、so 符号校验）+ `internal/httpapi`（10+1 端点）+ `internal/compile`（真 TinyGo 0.34.0 锁与 `-no-debug`）
+14 个内置策略登记、so 符号校验）+ `internal/httpapi`（10+2 端点）+ `internal/compile`（真 TinyGo 0.34.0 锁与 `-no-debug`）
 + `internal/compilerjob` + `cmd/*` 已落地。G5（2026-10-24）补了编译 job 的**队列 / 重试 / 限并发**（`compilerjob.Queue`，
-状态词表与 `strategy_build_jobs` 同一套）。余项见 `docs/TASKS.md`（`storage=url` 非目标、`version_hash` 域标签已随 contracts `v0.5.0` 收编、
-跨进程 job 状态回写）。
+状态词表与 `strategy_build_jobs` 同一套）。QT-41c（2026-10-25）收口了编译链路跨进程闭环：
+`POST .../build` → `internal/compilerclient` 派发 `cmd/compiler` → 内部端点回写 `queued → running → succeeded | failed`
+（失败带 `error_code`）；`-compiler-bin` 为空时 build 端点仍 fail-closed 503 `compile_unavailable`。
+余项见 `docs/TASKS.md`（`storage=url` 非目标、`version_hash` 域标签已随 contracts `v0.5.0` 收编）。
 
 **今天的实现**：`core:pkg/strategy`（运行时 + 插件 + `SignalProvider`）+ `strategies` 表（定义）。本仓只收"资产"这一半，**运行时留在 core**。
 

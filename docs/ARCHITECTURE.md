@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发 + 编译·资产哨兵改 contracts 别名 + G5 ③ `version_hash` 收编 contracts v0.5.0
+last-verified: 2026-10-25
+verified-by: QT-41c 跨进程编译闭环——新增 `internal/compilerclient` + `cmd/assetservice` 外部编译器装配 + 内部 build job 状态回写端点（依赖方向仍单向）
 ---
 
 # 架构 — tellurion-strategy
@@ -35,29 +35,34 @@ verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发 + 编译·
 | 解析（resolve） | ref → 元数据；latest 结果按 TTL 缓存 | 不缓存字节码给引擎（引擎自己缓存） |
 | 缓存（cache） | artifact 字节 L1 内存 LRU + L2 本地盘内容寻址；latest TTL 300s | 不改写 artifact / 不参与状态机 |
 
-## 3.1 包布局（现状，2026-10-23）
+## 3.1 包布局（现状，2026-10-25）
 
 ```
 cmd/
   assetservice/      进程入口：DSN → asset.OpenPG + PG.Migrate → httpapi.New + http.Server（127.0.0.1:8085）；
-                     DSN 为空才用 Memory（日志标注非持久化）
+                     DSN 为空才用 Memory（日志标注非持久化）。`-compiler-bin` 非空时装配
+                     internal/compilerclient（外部编译进程）；为空则 Compiler=nil，build 端点 503
   compiler/          进程入口：读一批 job JSON → internal/compilerjob.Queue → internal/compile.Runner
-                     → 内部端点登记 → stdout / -report 输出逐作业终态与失败原因
+                     → 内部端点登记 artifact / 回写 running 与终态 → stdout / -report 输出逐作业终态与失败原因
 internal/
   asset/             领域核心：模型 / VersionHash / Verify / WasmImports / ImportPolicyFor
                      / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
                      / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
                      / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
                      / elf.go（carrier=so 的导出符号表校验：entry 必须是已定义 GLOBAL/WEAK 符号）
-  httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 1 个内部登记端点，wire code 映射
+  httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 2 个内部端点（artifact 登记 / job 状态回写）
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、tinygo 强制 -no-debug、env 白名单、
                      toolchains.lock 二进制 sha256、超时、日志截断）
   compilerjob/       编译作业管线：Queue（批次排队 / 限并发 / 重试，状态词表与
                      strategy_build_jobs 同一套，终态可检索）→ 编译 → artifact_hash → 内部端点回填
+                     + StatusReporter（running / 终态回写内部端点，error_code 归因）
+  compilerclient/    资产服务侧的编译端口：实现 asset.Compiler + asset.BuildDispatcher，把作业写成
+                     临时 job JSON 并启动 cmd/compiler；Compile 不可用（派发模式）
 doc.go               仓级包文档（无代码）
 ```
 
-**依赖方向单一**：`cmd/*` → `internal/httpapi` → `internal/asset`；`cmd/compiler` → `internal/compilerjob` → `internal/compile`。
+**依赖方向单一**：`cmd/*` → `internal/httpapi` → `internal/asset`；`cmd/compiler` → `internal/compilerjob` → `internal/compile`；
+`cmd/assetservice` → `internal/compilerclient` → `internal/asset`（只走 `asset.Compiler` / `asset.BuildDispatcher` 端口）。
 `internal/asset` 不 import `internal/compile` 与 `internal/compilerjob`（编译是本服务的外部能力，通过 `asset.Compiler` 端口注入）。
 `internal/asset` 的存储依赖只有 `pgx`（PG 实现）；领域模型不出现 `pgx` 类型。
 
@@ -82,9 +87,13 @@ contracts（strategy_ref / ArtifactHash / HostABIContracts）  +  pgx（PG Store
         ↑
 tellurion-strategy  ──(HTTP 读)──►  core 引擎
         │
+        ├──(exec)──►  cmd/compiler（独立进程）
+        │                 └──(HTTP 内部端点)──►  tellurion-strategy（artifact 登记 / build job 状态回写）
         └── 依赖编译工具链（tinygo 0.34.0 镜像 / gcc）—— 只在 build 侧（cmd/compiler）
 ```
 
+- **跨进程编译不引入反向依赖**：`cmd/assetservice` 只通过 `internal/compilerclient` 启动 `cmd/compiler`；
+  编译进程只经 HTTP 内部端点回写，不直连 DB、不 import 资产服务实现。
 - **contracts `v0.4.0` 是已发的 tag**（2026-10-24，不是伪版本）。`engine` 子包（package 名仍是 `contracts`）提供 `StrategyRef` /
   `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵，以及 QT-41b ④ 的编译·资产四哨兵
   （`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`）—— 本仓**不复制**这些符号，
@@ -111,5 +120,5 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 腿 1 | DSL 资产化（零工具链）：`carrier=dsl` + `version_hash` + `strategy_ref` | ✅ `version_hash` / `strategy_ref` 解析已落地（2026-10-23） |
-| 腿 2 | WASM：工具链 + PoC → go/no-go | 🔶 执行器与装配已落地，真工具链镜像待接（QT-41b 未落项） |
-| X2 | 本仓完整落地（写 7 + 读 2 端点） | 🔶 9 个业务端点 + job 查询 + 内部登记已实装；PG / 迁移 / 缓存 / 内置登记已落；余 `storage=url`、external 语义、version_hash 契约收编 |
+| 腿 2 | WASM：工具链 + PoC → go/no-go | ✅ 编译执行器 + 真 TinyGo 0.34.0 镜像已接、产物可复现（QT-41b）；跨进程装配与状态回写已收口（QT-41c） |
+| X2 | 本仓完整落地（写 7 + 读 2 端点） | 🔶 10 个公开端点 + 2 个内部端点（artifact 登记 / build job 状态回写）已实装；PG / 迁移 / 缓存 / 内置登记已落；余 `storage=url`、`carrier=external` 的 hash 语义单独立文 |

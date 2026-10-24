@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs 建表 + G5 ③ `version_hash` 域标签收编 contracts v0.5.0（schema 无变更）
+last-verified: 2026-10-25
+verified-by: QT-41c 落地——`strategy_build_jobs` 追加 `error_code`（可重入 ALTER），PG/Memory 读写同步
 ---
 
 # DB Schema — tellurion-strategy
@@ -18,7 +18,7 @@ verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs �
 | `strategy.strategy_versions` | 源码版本：`version_hash`（内容寻址）/ `source` / `carrier` / `abi_version` / `scope` / `entry` | 新建 |
 | `strategy.strategy_artifacts` | artifact 元数据：`version_hash` + `artifact_hash` / `size_bytes` / `memory_limit_bytes` / `imports` / `toolchain` / `status` / `storage` / `compile_log` / `built_by` | 新建（主键 `(strategy_id, artifact_hash)`，见 §5 裁决） |
 | `strategy.strategy_artifact_blobs` | 字节码本体（本地栈 BYTEA，8 MiB 上限；`storage='url'` 未实现） | 新建 |
-| `strategy.strategy_build_jobs` | 编译作业：`job_id` / `version_hash` / `toolchain` / `state` / `artifact_hash` / `error` / `finished_at` | 新建（2026-10-24；job 跨重启可查） |
+| `strategy.strategy_build_jobs` | 编译作业：`job_id` / `version_hash` / `toolchain` / `state` / `artifact_hash` / **`error_code`** / `error` / `finished_at` | 新建（2026-10-24；job 跨重启可查）；`error_code` 于 2026-10-25 追加 |
 | `quant.external_signals` | 外部模型信号注入（`content_hash` 幂等去重，`SignalStrategy` 按 `as_of` 拉取） | **不属本仓** · owner = **core strategy-runtime 模块**（与 H5 裁决的 `quant.strategy_state` 同源，SPEC-R-02）；DDL 在 `tellurion:pkg/storage/postgres.go`（Migration 048），写者 `tellurion:pkg/strategy/signal_store.go` |
 
 约束：
@@ -28,6 +28,8 @@ verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs �
 - `strategy_artifact_blobs`：`PRIMARY KEY (strategy_id, artifact_hash)` + `octet_length(bytes) <= 8388608`。
 - `strategy_build_jobs`：`PRIMARY KEY (id)` + `state IN ('queued','running','succeeded','failed')`；
   `(strategy_id, version_hash)` 外键指向版本行；`finished_at` 只在终态写入。
+  `error_code` 是**机器可读归因码**（`compile_failed` / `compile_unavailable` / `payload_too_large` / `artifact_invalid`），
+  非空判定由服务层做（成功作业写空串），`NOT NULL DEFAULT ''` 保证旧行可读。
 - `version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
   输入六项与域标签由 contracts `v0.5.0` 提供（`StrategyVersionInput` / `DomainStrategyVersionHash`，G5 ③ 收编），
   本仓不再定义第二份；域字符串逐字节未变，**历史 `version_hash` 全部仍然有效**。
@@ -62,6 +64,9 @@ verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs �
   再监听；DSN 为空才退回 `Memory`（日志明确标注非持久化）。PG 实现见 `internal/asset/pgstore.go`。
 - 不另建 `migrations/*.sql`：本仓 DDL 的唯一真相是上面那个 Go 数组；`.sql` 会把真相劈成两份。
 - **只前滚**：已合并的迁移不改；修错靠新增一条。
+- **2026-10-25（QT-41c）**：`strategy_build_jobs` 追加 `error_code`，迁移是数组末尾的一条
+  `ALTER TABLE strategy.strategy_build_jobs ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT ''`；
+  已落地的建表语句**一字未改**，空库 / 既有库都能重入执行。
 - 每条必须可重入（`IF NOT EXISTS` / `IF EXISTS`），且能在空库上一次跑完。
 - 跨 schema 取数只走**只读视图或 API**；出现 `join` 别人的表就是边界腐化的第一信号。
 - 结构变更的同步义务：本文件 + `docs/ARCHITECTURE.md` 的「数据归属」节必须同一次提交里更新。

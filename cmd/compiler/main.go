@@ -132,6 +132,9 @@ func run(args []string) error {
 		Runner:           runner,
 		MemoryLimitBytes: *memoryLimit,
 		BuiltBy:          "cmd/compiler " + runner.ToolchainID(),
+		// 资产服务签发的 job_id 非空时，running / 终态经内部端点回写；
+		// 空 job_id 的旧用法不上报（见 StatusReporter.Report）。
+		Reporter: &compilerjob.StatusReporter{AssetURL: *assetURL},
 	}, compilerjob.QueueOptions{
 		Workers:     *workers,
 		MaxAttempts: *maxAttempts,

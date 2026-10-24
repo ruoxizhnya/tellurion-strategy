@@ -446,10 +446,10 @@ func (p *PG) SaveJob(ctx context.Context, job BuildJob) error {
 	}
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO strategy.strategy_build_jobs
-			(id, strategy_id, version_hash, toolchain, state, artifact_hash, error, created_at, finished_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			(id, strategy_id, version_hash, toolchain, state, artifact_hash, error_code, error, created_at, finished_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		job.ID, job.StrategyID, job.VersionHash, job.Toolchain, job.State,
-		job.ArtifactHash, job.Error, job.CreatedAt, job.FinishedAt)
+		job.ArtifactHash, job.ErrorCode, job.Error, job.CreatedAt, job.FinishedAt)
 	if isUniqueViolation(err) {
 		return fmt.Errorf("%w: job %s", ErrArtifactConflict, job.ID)
 	}
@@ -466,9 +466,9 @@ func (p *PG) UpdateJob(ctx context.Context, job BuildJob) error {
 	}
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE strategy.strategy_build_jobs
-		   SET state = $2, artifact_hash = $3, error = $4, finished_at = $5
+		   SET state = $2, artifact_hash = $3, error_code = $4, error = $5, finished_at = $6
 		 WHERE id = $1`,
-		job.ID, job.State, job.ArtifactHash, job.Error, job.FinishedAt)
+		job.ID, job.State, job.ArtifactHash, job.ErrorCode, job.Error, job.FinishedAt)
 	if err != nil {
 		return err
 	}
@@ -489,10 +489,10 @@ func (p *PG) GetJob(ctx context.Context, id string) (BuildJob, error) {
 	)
 	err := p.pool.QueryRow(ctx, `
 		SELECT id, strategy_id, trim(version_hash), toolchain, state,
-		       trim(artifact_hash), error, created_at, finished_at
+		       trim(artifact_hash), error_code, error, created_at, finished_at
 		  FROM strategy.strategy_build_jobs WHERE id = $1`, id).
 		Scan(&job.ID, &job.StrategyID, &job.VersionHash, &job.Toolchain, &job.State,
-			&job.ArtifactHash, &job.Error, &job.CreatedAt, &finishedAt)
+			&job.ArtifactHash, &job.ErrorCode, &job.Error, &job.CreatedAt, &finishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, id)
 	}

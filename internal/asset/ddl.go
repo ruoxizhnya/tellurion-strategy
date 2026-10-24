@@ -95,4 +95,9 @@ var migrationStatements = []string{
 		FOREIGN KEY (strategy_id, version_hash)
 			REFERENCES strategy.strategy_versions(strategy_id, version_hash) ON DELETE CASCADE
 	)`,
+
+	// QT-41c：作业失败归因码（机器可读）。只追加一条可重入迁移，
+	// 不动上面已落地的建表语句；file 级 error 仍是人读文案。
+	`ALTER TABLE strategy.strategy_build_jobs
+		ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT ''`,
 }

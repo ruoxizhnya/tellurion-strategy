@@ -1,16 +1,20 @@
 ---
 status: active
-last-verified: 2026-10-24
-verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓存持久化）+ G5 ② 编译·资产哨兵切 contracts 别名 + G5 ③ `version_hash` 收编 contracts v0.5.0（wire code 不变）
+last-verified: 2026-10-25
+verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编译进程装配（wire code 复用，无新增）
 ---
 
 # API Schema — tellurion-strategy
 
-> **实现状态（2026-10-24）**：10 个公开端点 + 1 个内部登记端点由 `internal/httpapi` 落地，
-> 语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。存储有 `Memory`（测试）与 PG（生产，
-> 启动执行迁移）；两级缓存、latest TTL、build job 持久化、14 个内置策略登记均已落地。
+> **实现状态（2026-10-25）**：10 个公开端点 + 2 个内部端点（artifact 登记 / build job 状态回写）由
+> `internal/httpapi` 落地，语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。
+> 存储有 `Memory`（测试）与 PG（生产，启动执行迁移）；两级缓存、latest TTL、build job 持久化、
+> 14 个内置策略登记均已落地。
+> **QT-41c（2026-10-25）**：`cmd/assetservice` 用 `-compiler-bin` 装配外部编译进程——build 端点落 queued 行后
+> 经 `internal/compilerclient` 派发 `cmd/compiler`，编译进程经内部端点回写 `running` / 终态；
+> `-compiler-bin` 为空则不装配，build 端点仍 fail-closed 503 `compile_unavailable`。
 > **剩余未落项**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义单独立文、core 侧 Mount 门。
-> 逐条登记在 `docs/TASKS.md` QT-41/41b 的施工记录里。
+> 逐条登记在 `docs/TASKS.md` QT-41/41b/41c 的施工记录里。
 > `version_hash` 的输入形状与域标签已收编 contracts `v0.5.0`（G5 ③，2026-10-24）：`PUT .../source` 的 wire 形状与 hash 值不变。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
@@ -52,6 +56,16 @@ verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/internal/strategies/{id}/artifacts` | 编译服务回填 artifact（base64 字节 + hash 自证 + imports 自证）→ 201 artifact 视图 |
+| POST | `/internal/strategies/{id}/builds/{job_id}` | 编译进程回写 build job 状态：body `{state, artifact_hash, error_code, error}` → 200 BuildJob |
+
+> **build job 状态机（QT-41c）**：`queued → running → succeeded | failed`，`queued` 可直接到终态；
+> 同终态重复上报幂等；终态不可回退。非法状态 / 未知值 → 400 `invalid_request`；不允许的跃迁 → 409 `invalid_transition`。
+> `succeeded` 必须带 64 位小写 hex `artifact_hash`，且该 artifact 行已登记并属于同一 `(strategy, version, toolchain)`，
+> 否则 409 `artifact_invalid`。`failed` 的 `error_code` 缺省 `compile_failed`。job 不存在或不属于路径 id → 404 `job_not_found`（不跨策略枚举）。
+>
+> **`error_code`（机器可读归因，随 BuildJob 返回）**：`compile_failed` / `compile_unavailable` / `payload_too_large` / `artifact_invalid`。
+> 它与 HTTP 错误码不是一回事：503 `compile_unavailable` 表示「服务没装配/启动不了编译器」，作业里的
+> `error_code=compile_failed` 表示「编译器跑了但这次编译失败」，调用方据此区分。
 
 ## 2. 错误码与 fail-closed 语义
 
@@ -135,6 +149,10 @@ verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓
 | W5 | `POST /api/strategies/{id}/versions/{hash}/promote` | 只能 promote `validated` 状态；未校验 → 409（code 未定） | **promote 不覆盖 artifact 行**（QT-41 ③-④）；响应必须带新 hash 供调用方主动失效缓存（F 裁决） | ⚠️ `active_version_hash` 列不存在，promote 今天**无处可写**；`active_artifact_hash` 更是只有工单里有（偏差 #1） |
 | W6 | `POST /api/strategies/{id}/versions/{hash}/deprecate` | 已 promote 版本可 deprecate；历史回测仍可解析（解析已 promote 的 hash 不因 deprecate 失败） | **1.0 之前**删符号无义务，但本仓的 wire 面一旦发布要按 C5 保留一个 MINOR（`tellurion-contracts:CT-02` 的版本规则表） | ⛔ `strategy_artifacts.status` 状态机（`built→validated→promoted/rejected/deprecated`）无表无实现 |
 | W7 | `GET /api/strategies/{id}/versions` → `[{status, version_hash, artifact_hash, toolchain}]` | 无版本 → `200 []`，**不是** `null`（DATA-14 的教训：空列表编码成 null 等于契约说谎） | 分页与排序键要现在定（后续加排序是 breaking） | ⛔ 同上，无表 |
+
+> **2026-10-25 更新（QT-41c）**：W3 的「编译管线不存在」已收口——`cmd/compiler` + `internal/compilerclient`
+> 的跨进程闭环落地（build 端点 202 → 外部进程编译 → 内部端点回写状态）。wire 面**没有新增码**：
+> 状态回写复用 §2 既有 `invalid_transition` / `artifact_invalid` / `job_not_found` / `invalid_request`。
 
 ### 6.2 读侧端点（2，引擎只用这两个）
 

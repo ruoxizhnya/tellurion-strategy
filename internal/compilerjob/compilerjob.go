@@ -64,6 +64,8 @@ type Config struct {
 	MemoryLimitBytes int64
 	BuiltBy          string
 	HTTPClient       *http.Client
+	// Reporter 是作业状态回写面（可选）：nil 时队列只在进程内记录状态。
+	Reporter BuildReporter
 }
 
 // Run 执行一次编译并登记，返回服务端落库后的 artifact 行。

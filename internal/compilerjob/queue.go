@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -194,7 +195,24 @@ func (q *Queue) execute(ctx context.Context, entry *queueEntry) {
 	entry.rec.StartedAt = &now
 	q.mu.Unlock()
 
+	runningReported := false
 	var last error
+	// 首次尝试前上报 running；上报失败按可重试错误处理，但不占用编译尝试次数
+	// ——回写面抖动不该把「还没开始编译」算成一次失败的编译。
+	for tries := 0; !runningReported && tries < q.opts.MaxAttempts; tries++ {
+		if tries > 0 && !sleepCtx(ctx, q.opts.Backoff) {
+			break
+		}
+		if err := q.report(entry, StateRunning, "", "", ""); err != nil {
+			last = fmt.Errorf("report running: %v", err)
+			continue
+		}
+		runningReported = true
+	}
+	if !runningReported {
+		// 服务侧仍是 queued；终态上报允许 queued 直达终态，编译照常进行。
+		slog.Warn("compilerjob: report running state", "job_id", entry.rec.JobID, "error", last)
+	}
 	for attempt := 1; attempt <= q.opts.MaxAttempts; attempt++ {
 		if attempt > 1 && !sleepCtx(ctx, q.opts.Backoff) {
 			break
@@ -222,7 +240,6 @@ func (q *Queue) execute(ctx context.Context, entry *queueEntry) {
 
 func (q *Queue) finish(entry *queueEntry, state, artifactHash string, cause error) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	now := q.opts.Now()
 	entry.rec.State = state
 	entry.rec.ArtifactHash = artifactHash
@@ -230,6 +247,27 @@ func (q *Queue) finish(entry *queueEntry, state, artifactHash string, cause erro
 	if cause != nil {
 		entry.rec.Error = cause.Error()
 	}
+	jobID := entry.rec.JobID
+	q.mu.Unlock()
+
+	// 终态上报失败只记账：作业在进程内已经定案，不能因回写失败改判。
+	code, message := "", ""
+	if cause != nil {
+		code, message = ErrorCodeFor(cause), cause.Error()
+	}
+	if err := q.report(entry, state, artifactHash, code, message); err != nil {
+		slog.Warn("compilerjob: report terminal state", "job_id", jobID, "state", state, "error", err)
+	}
+}
+
+// report 调用注入的回写面；nil Reporter 是合法的（进程内批次用法）。
+func (q *Queue) report(entry *queueEntry, state, artifactHash, errorCode, message string) error {
+	if q.cfg.Reporter == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return q.cfg.Reporter.Report(ctx, entry.job, state, artifactHash, errorCode, message)
 }
 
 // Record 按 job_id 返回快照。
