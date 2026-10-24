@@ -173,9 +173,11 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 > `TestCompileErrorFamilyIsContractAlias` 钉住「同一个值 + 文案一致 + `%w` 包装后可用别名判定」。
 > **HTTP wire code 零变化**（`compile_failed` / `compile_unavailable` / `payload_too_large` 原样）；`docs/api-schema.md` §2 补了哨兵来源。
 > 所有调用点（`internal/compile` 的包装、`httpapi.classify`、`compilerjob.DefaultRetryable`）仍写 `asset.Err*`，行为不变。
-> **③ ⛔ `version_hash` 对齐（未做，按派工要求不动）**：G0D-C3 + 裁-01 未落定；契约仓 `grep strategy_version_hash`
-> 只有 `provenance.go` 的**输入字段**，没有 `DomainStrategyVersionHash` 域标签（已下载的 v0.4.0 模块实测仍如此）。按派工「未裁前不删现有 `DomainStrategyVersionHash`、
-> 也不在契约仓另写一份」，本批 `internal/asset/hash.go` 零改动。
+> **③ ⛔ `version_hash` 对齐（契约腿已落；别名收编未做）**：**裁-01 已于 2026-10-24 落定 = 6 项**
+> `strategy_id + carrier + abi_version + scope + entry + source`（不含 `capability`、不含 `params_defaults`；`tellurion:docs/design/qt-decoupling/w1-repo-ownership.md` §2.4 已按此改写），
+> 本仓 `internal/asset/hash.go` 与裁决**一致，无需改动**。契约腿已于 2026-10-24 随 contracts `v0.5.0` 落地
+> （`StrategyVersionInput` + `DomainStrategyVersionHash`，导出面 443→447）；本仓同日已升 pin `v0.5.0`
+> （G4），本地定义与契约逐字段同序，**别名收编另立单，本批不改 `hash.go`**。
 >
 > **测试（本机实测）**：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；
 > `STRATEGY_TEST_DSN=... go test ./internal/asset -count=1`（PG 集成）全绿，EXIT=0。
