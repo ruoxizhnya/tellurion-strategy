@@ -78,8 +78,7 @@ verified-by: QT-41 G4 收口 + QT-41b 真工具链落账 + G5 ①编译作业队
 >    真镜像编译两次逐字节一致，`artifact_hash` 固定；证据 `docs/evidence/QT-41b-tinygo-0.34.0.md`。
 >    **实测逮到一个可复现性缺陷并修掉**：TinyGo 默认把源文件绝对路径写进 DWARF，Runner 的随机临时目录会让同源码产出两个
 >    hash；`compile.Config` 现对 `name=tinygo` 强制要求精确参数 `-no-debug`。
-> 9. ➖ **`version_hash` 域标签迁 contracts**：按派工要求等 G1 第二批发版，本批不动；仍由本仓定义
->    `tellurion.strategy_version_hash.v1`（风险见 `db-schema.md` §6）。
+> 9. ✅ **`version_hash` 域标签迁 contracts**：已随 contracts `v0.5.0` 收编（G5 ③，2026-10-24，本文件 §「③ 收编」记录）；本仓不再定义域标签与 `VersionInput`，编码委托 `contracts.StrategyVersionInput.Hash()`。
 > 10. ✅ **`Promote` 两步写改事务**：`Store.Promote` / `Store.Deprecate` 把「artifact 状态 + definition 生效指针」
 >     收进单事务（PG）或单锁（Memory）；Service 不再分两步写。
 >
@@ -106,7 +105,7 @@ verified-by: QT-41 G4 收口 + QT-41b 真工具链落账 + G5 ①编译作业队
 > `dataflow.md`（启动登记 / job 持久化 / 缓存 / so 符号）、`ARCHITECTURE.md` + `adr/0003`（存储/缓存/作业/可复现性）。
 >
 > **余项（不属于本单验收，未做也不冒充已完成）**：`storage='url'` 分支、`carrier=external` 的 hash 语义单独立文、
-> core 侧 Mount 门、`version_hash` 域标签迁 contracts（等 G1 第二批发版）。
+> core 侧 Mount 门。~~`version_hash` 域标签迁 contracts~~ 已随 `v0.5.0` 收编（G5 ③）。
 
 ### QT-41b · X2 策略编译服务（Go 子集 → artifact 管线）[P1] 🔶（2026-10-22 开工，2026-10-23 首批实装落地；2026-10-24 真 TinyGo 0.34.0 已接）
 
