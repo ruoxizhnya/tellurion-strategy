@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓存持久化）+ G5 ② 编译·资产哨兵切 contracts v0.4.0 别名（wire code 不变）
+verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓存持久化）+ G5 ② 编译·资产哨兵切 contracts 别名 + G5 ③ `version_hash` 收编 contracts v0.5.0（wire code 不变）
 ---
 
 # API Schema — tellurion-strategy
@@ -9,8 +9,9 @@ verified-by: G4 落地——10+1 端点对表（job 查询 / job_not_found / 缓
 > **实现状态（2026-10-24）**：10 个公开端点 + 1 个内部登记端点由 `internal/httpapi` 落地，
 > 语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。存储有 `Memory`（测试）与 PG（生产，
 > 启动执行迁移）；两级缓存、latest TTL、build job 持久化、14 个内置策略登记均已落地。
-> **剩余未落项**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义单独立文、core 侧 Mount 门、
-> `version_hash` 域标签迁 contracts（等 G1 第二批发版）。逐条登记在 `docs/TASKS.md` QT-41/41b 的施工记录里。
+> **剩余未落项**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义单独立文、core 侧 Mount 门。
+> 逐条登记在 `docs/TASKS.md` QT-41/41b 的施工记录里。
+> `version_hash` 的输入形状与域标签已收编 contracts `v0.5.0`（G5 ③，2026-10-24）：`PUT .../source` 的 wire 形状与 hash 值不变。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 

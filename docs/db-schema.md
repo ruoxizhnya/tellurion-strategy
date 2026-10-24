@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs 建表
+verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs 建表 + G5 ③ `version_hash` 域标签收编 contracts v0.5.0（schema 无变更）
 ---
 
 # DB Schema — tellurion-strategy
@@ -29,6 +29,8 @@ verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs �
 - `strategy_build_jobs`：`PRIMARY KEY (id)` + `state IN ('queued','running','succeeded','failed')`；
   `(strategy_id, version_hash)` 外键指向版本行；`finished_at` 只在终态写入。
 - `version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
+  输入六项与域标签由 contracts `v0.5.0` 提供（`StrategyVersionInput` / `DomainStrategyVersionHash`，G5 ③ 收编），
+  本仓不再定义第二份；域字符串逐字节未变，**历史 `version_hash` 全部仍然有效**。
 
 ## 2. 只读输入（不属于本仓，禁止写入）
 
@@ -76,9 +78,5 @@ verified-by: G4 落地——PG Store/迁移执行对表 + strategy_build_jobs �
 
 ## 6. 待定
 
-- **`version_hash` 的域标签不在 contracts**：`tellurion-contracts:engine/canonical.go` 只有 `run_spec_hash` / `dataset_snapshot_hash` /
-  `universe_hash` / `calendar_hash` / `adjustment_anchor_digests` / `params_hash` 六个域，没有 `strategy_version_hash`。
-  本仓暂在 `internal/asset/hash.go` 定义 `tellurion.strategy_version_hash.v1`。
-  **风险**：若将来 contracts 收编并改用别的字符串，所有历史 `version_hash` 全部失效；要么 contracts 以这个字符串为准收录，要么本仓保留为唯一 owner。
 - **同版本多工具链的 promote 语义**：当前 active 指针只记一个 `artifact_hash`（即「此刻生效的是哪份字节」），
   「同版本另一工具链后来也 promote」会覆盖指针。是否需要「多内核各持一个 active」，取决于 NT 侧接入形态（未决 C）。

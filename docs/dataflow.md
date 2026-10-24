@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 链路对表 + G5 编译作业队列（限并发 / 重试 / 终态可检索，状态词表对齐 strategy_build_jobs）
+verified-by: G4 链路对表 + G5 编译作业队列（限并发 / 重试 / 终态可检索）+ G5 ③ `version_hash` 输入/域标签取自 contracts v0.5.0
 ---
 
 # Dataflow — tellurion-strategy
@@ -39,7 +39,7 @@ verified-by: G4 链路对表 + G5 编译作业队列（限并发 / 重试 / 终�
    `carrier=builtin`、无 artifact；G 裁决：保留 core 的 init 注册，不做全量迁移）→ 开始监听。
    已存在同名定义只核对形状、不覆盖；同名不同 carrier/scope/entry = 启动失败。
 1. `POST /api/strategies` 建定义（`carrier` / `abi_version` / `scope` / `capability` / `entry`）
-2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256，域 `tellurion.strategy_version_hash.v1`）→ 登记 `strategy_versions`
+2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256；六项输入与域 `tellurion.strategy_version_hash.v1` 取自 contracts `v0.5.0`，G5 ③）→ 登记 `strategy_versions`
 3. 资产服务的 `POST .../build` → 先落 `strategy_build_jobs`（queued）→ 在**本进程内**调 `asset.Compiler` →
    `GET .../builds/{job_id}` 轮询 → 终态写回该行。**现状**：`cmd/assetservice` 未装配编译器 ⇒ 恒 503
    `compile_unavailable`；资产服务与独立编译进程之间的派发 / 状态回写尚未接线（见 `TASKS.md` QT-41b G5 余项）。

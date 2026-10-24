@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo）与 QT-41b 真工具链落账 + G5 编译作业队列/重试/限并发 + 错误族切 contracts v0.4.0 别名
+verified-by: QT-41 G4 收口 + QT-41b 真工具链落账 + G5 ①编译作业队列/重试/限并发 ②错误族切 contracts 别名 ③`version_hash` 收编 contracts v0.5.0
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -152,7 +152,7 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 > 无锁不编译、二进制被换即拒）；真镜像灌数时把它的 sha256 写进部署侧锁文件即可。
 > 另：上一批提交（`832764b`）漏了 `go.mod` 的 testify `require`——新 checkout 的 `go test` 必红，本批 tidy 修正并补 AGENTS.md §4 登记。
 
-> **施工记录（G5，2026-10-24）**：派工三条（job 队列/重试/并发 → 错误族消费 → `version_hash` 对齐），**① 已落，②③ 前置未成立、本批不动**。
+> **施工记录（G5，2026-10-24）**：派工三条（job 队列/重试/并发 → 错误族消费 → `version_hash` 对齐），**① ✅ ② ✅ ③ ✅**（③ 在 contracts `v0.5.0` 发布后同日收编）。
 >
 > **① ✅ 编译 job 的队列 / 重试 / 限并发**
 > - `internal/compilerjob/queue.go`：`Queue` 批次语义（Submit 全部作业 → `Run` 由 `Workers` 个 worker 取队首执行 → 全部终态后返回）。
@@ -173,11 +173,22 @@ verified-by: QT-41 G4 收口（PG/缓存/job/内置登记/so 符号/真 TinyGo�
 > `TestCompileErrorFamilyIsContractAlias` 钉住「同一个值 + 文案一致 + `%w` 包装后可用别名判定」。
 > **HTTP wire code 零变化**（`compile_failed` / `compile_unavailable` / `payload_too_large` 原样）；`docs/api-schema.md` §2 补了哨兵来源。
 > 所有调用点（`internal/compile` 的包装、`httpapi.classify`、`compilerjob.DefaultRetryable`）仍写 `asset.Err*`，行为不变。
-> **③ ⛔ `version_hash` 对齐（契约腿已落；别名收编未做）**：**裁-01 已于 2026-10-24 落定 = 6 项**
-> `strategy_id + carrier + abi_version + scope + entry + source`（不含 `capability`、不含 `params_defaults`；`tellurion:docs/design/qt-decoupling/w1-repo-ownership.md` §2.4 已按此改写），
-> 本仓 `internal/asset/hash.go` 与裁决**一致，无需改动**。契约腿已于 2026-10-24 随 contracts `v0.5.0` 落地
-> （`StrategyVersionInput` + `DomainStrategyVersionHash`，导出面 443→447）；本仓同日已升 pin `v0.5.0`
-> （G4），本地定义与契约逐字段同序，**别名收编另立单，本批不改 `hash.go`**。
+> **③ ✅ `version_hash` 收编 contracts（2026-10-24，契约 v0.5.0 发布后）**：**裁-01 = 6 项**
+> `strategy_id + carrier + abi_version + scope + entry + source`（不含 `capability`、不含 `params_defaults`），
+> 契约腿已随 `v0.5.0` 落地（`StrategyVersionInput` + `DomainStrategyVersionHash`，导出面 443→447；本仓 pin 见 `31e613c`）。
+> 收编落点：`internal/asset/hash.go` **删掉本地 `DomainStrategyVersionHash` 与 `VersionInput`**，
+> `VersionHash` 改收 `contracts.StrategyVersionInput`，编码直接委托 `in.Hash()`（本仓只保留校验与错误语义，
+> 不再抄 canonical 段）；`internal/asset/service.go` 的 `PutSource` 调用点同步。**HTTP / DB 行为零变化**。
+> **域标签逐字节未变**（`tellurion.strategy_version_hash.v1`），历史 `version_hash` 全部仍然有效。
+> 钉子：`TestVersionHash_MatchesContractGoldenVector` —— 黄金向量 `0e6ad536…` **抄自 contracts 的
+> `TestGoldenVector_StrategyVersionHash`**（不是本仓现算），并直接与 `contracts.StrategyVersionInput.MustHash()` 对拍；
+> `TestPutSource_ProducesContractHash` 另钉住**服务调用点**的六项映射（定义带 `capability`，证明它没被顺手塞进 hash）。
+> 原六项敏感性 / 非法输入用例改用契约类型后照绿。
+> **破坏验证**：把 `return in.Hash()` 改成「本仓抄一份编码 + 域标签写 v2」→ `TestVersionHash_MatchesContractGoldenVector`
+> 红（`29bd0931… vs 0e6ad536…`，EXIT=1）；逐字节还原后 `internal/asset/hash.go` 的 sha256 与改前相同（`055a00f1…`）并复绿。
+> **验收 grep**：`internal/asset/hash.go` 里**没有** `const DomainStrategyVersionHash`、也没有 `type VersionInput`（两个本地定义都已删除；文件里只剩对 `contracts.StrategyVersionInput` 的引用）。
+> 门禁：`gofmt -l .` 空 + `go build ./...` + `go vet ./...` + `go test ./... -count=1` 全绿
+> （无 `STRATEGY_TEST_DSN` / 真工具链镜像时，PG 与真镜像腿按设计 skip，不是通过）。
 >
 > **测试（本机实测）**：`go build ./... && go vet ./... && go test ./... -count=1` 全绿；
 > `STRATEGY_TEST_DSN=... go test ./internal/asset -count=1`（PG 集成）全绿，EXIT=0。

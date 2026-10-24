@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-10-24
-verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发（compilerjob.Queue）+ contracts v0.4.0（编译·资产哨兵改别名）
+verified-by: G4 分层对表 + G5 编译作业队列/重试/限并发 + 编译·资产哨兵改 contracts 别名 + G5 ③ `version_hash` 收编 contracts v0.5.0
 ---
 
 # 架构 — tellurion-strategy
@@ -64,8 +64,8 @@ doc.go               仓级包文档（无代码）
 **事务边界**：`promote` / `deprecate` 的「artifact 状态 + definition 生效指针」在 Store 内单事务提交
 （PG）或单锁内完成（Memory）；HTTP/Service 层不再分两步写。
 
-**未落**：`storage=url` 分支（只保留列）、`carrier=external` 的 hash 语义单独立文、`version_hash` 域标签迁 contracts
-（等 G1 第二批发版）。清单见 `docs/TASKS.md`。
+**未落**：`storage=url` 分支（只保留列）、`carrier=external` 的 hash 语义单独立文。清单见 `docs/TASKS.md`。
+（`version_hash` 的输入形状与域标签已于 G5 ③ 收编 contracts `v0.5.0`；`internal/asset/hash.go` 不再持有本地定义。）
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 

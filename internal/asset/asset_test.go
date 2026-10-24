@@ -167,8 +167,8 @@ func mustPromote(t *testing.T, svc *Service, id, versionHash string) Artifact {
 // ─── version_hash ──────────────────────────────────────────────
 
 func TestVersionHash_IsDeterministicAndFieldSensitive(t *testing.T) {
-	base := VersionInput{
-		StrategyID: "s1", Carrier: CarrierWASM, ABIVersion: "on_bar/2",
+	base := contracts.StrategyVersionInput{
+		StrategyID: "s1", Carrier: string(CarrierWASM), ABIVersion: "on_bar/2",
 		Scope: contracts.ScopeMarket, Entry: "OnBar", Source: "package strategy",
 	}
 	h1, err := VersionHash(base)
@@ -183,13 +183,13 @@ func TestVersionHash_IsDeterministicAndFieldSensitive(t *testing.T) {
 		t.Fatalf("hash %q is not 64 lowercase hex", h1)
 	}
 
-	mutations := map[string]func(*VersionInput){
-		"strategy_id": func(in *VersionInput) { in.StrategyID = "s2" },
-		"carrier":     func(in *VersionInput) { in.Carrier = CarrierSO },
-		"abi_version": func(in *VersionInput) { in.ABIVersion = "on_bar/1" },
-		"scope":       func(in *VersionInput) { in.Scope = contracts.ScopeSymbol },
-		"entry":       func(in *VersionInput) { in.Entry = "OnBar2" },
-		"source":      func(in *VersionInput) { in.Source = "package strategy // x" },
+	mutations := map[string]func(*contracts.StrategyVersionInput){
+		"strategy_id": func(in *contracts.StrategyVersionInput) { in.StrategyID = "s2" },
+		"carrier":     func(in *contracts.StrategyVersionInput) { in.Carrier = string(CarrierSO) },
+		"abi_version": func(in *contracts.StrategyVersionInput) { in.ABIVersion = "on_bar/1" },
+		"scope":       func(in *contracts.StrategyVersionInput) { in.Scope = contracts.ScopeSymbol },
+		"entry":       func(in *contracts.StrategyVersionInput) { in.Entry = "OnBar2" },
+		"source":      func(in *contracts.StrategyVersionInput) { in.Source = "package strategy // x" },
 	}
 	for name, mutate := range mutations {
 		changed := base
@@ -205,21 +205,21 @@ func TestVersionHash_IsDeterministicAndFieldSensitive(t *testing.T) {
 }
 
 func TestVersionHash_RejectsBadInput(t *testing.T) {
-	base := VersionInput{
-		StrategyID: "s1", Carrier: CarrierWASM, ABIVersion: "on_bar/1",
+	base := contracts.StrategyVersionInput{
+		StrategyID: "s1", Carrier: string(CarrierWASM), ABIVersion: "on_bar/1",
 		Scope: contracts.ScopeSymbol, Entry: "OnBar", Source: "x",
 	}
 	cases := []struct {
 		name   string
-		mutate func(*VersionInput)
+		mutate func(*contracts.StrategyVersionInput)
 		want   error
 	}{
-		{"empty id", func(in *VersionInput) { in.StrategyID = " " }, ErrInvalidDefinition},
-		{"unknown carrier", func(in *VersionInput) { in.Carrier = "rust" }, ErrUnsupportedCarrier},
-		{"unknown scope", func(in *VersionInput) { in.Scope = "run" }, ErrInvalidScope},
-		{"empty entry", func(in *VersionInput) { in.Entry = "" }, ErrInvalidDefinition},
-		{"empty source", func(in *VersionInput) { in.Source = "  " }, ErrSourceMissing},
-		{"source too large", func(in *VersionInput) { in.Source = strings.Repeat("x", int(MaxSourceBytes)+1) }, ErrSourceTooLarge},
+		{"empty id", func(in *contracts.StrategyVersionInput) { in.StrategyID = " " }, ErrInvalidDefinition},
+		{"unknown carrier", func(in *contracts.StrategyVersionInput) { in.Carrier = "rust" }, ErrUnsupportedCarrier},
+		{"unknown scope", func(in *contracts.StrategyVersionInput) { in.Scope = "run" }, ErrInvalidScope},
+		{"empty entry", func(in *contracts.StrategyVersionInput) { in.Entry = "" }, ErrInvalidDefinition},
+		{"empty source", func(in *contracts.StrategyVersionInput) { in.Source = "  " }, ErrSourceMissing},
+		{"source too large", func(in *contracts.StrategyVersionInput) { in.Source = strings.Repeat("x", int(MaxSourceBytes)+1) }, ErrSourceTooLarge},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -230,6 +230,65 @@ func TestVersionHash_RejectsBadInput(t *testing.T) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestVersionHash_MatchesContractGoldenVector 是 G5 ③ 的跨仓验收腿。
+//
+// 黄金向量**抄自 contracts**（`engine/provenance_vector_test.go` 的
+// TestGoldenVector_StrategyVersionHash），不是本仓现算出来的——现算只能证明
+// 「两次调用一致」，证明不了「与契约逐字节一致」。改域标签 / 字段名 / 顺序 /
+// 多一项少一项，都会在这里红：version_hash 是资产四张表的键，还折进
+// run_spec_hash，漂一个字符 = 所有历史版本留痕失效。
+func TestVersionHash_MatchesContractGoldenVector(t *testing.T) {
+	if contracts.DomainStrategyVersionHash != "tellurion.strategy_version_hash.v1" {
+		t.Fatalf("domain label drifted: %q（改它 = 历史 version_hash 全失效，只能升 v2）",
+			contracts.DomainStrategyVersionHash)
+	}
+
+	in := contracts.StrategyVersionInput{
+		StrategyID: "s1",
+		Carrier:    string(CarrierWASM),
+		ABIVersion: "on_bar/1",
+		Scope:      contracts.ScopeSymbol,
+		Entry:      "OnBar",
+		Source:     "x",
+	}
+	const golden = "0e6ad53637ce43742804fe325d97b6799372fe03319f1020fc26f0d748d68412"
+
+	got, err := VersionHash(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != golden {
+		t.Fatalf("version_hash = %s, want the contract golden %s", got, golden)
+	}
+	// 不经过本仓的校验/包装，直接调契约的 Hash 也必须同值：两条路径不能各算各的。
+	if want := in.MustHash(); got != want {
+		t.Fatalf("strategy path = %s, contract path = %s", got, want)
+	}
+}
+
+// TestPutSource_ProducesContractHash 钉住**服务调用点**的六项映射。
+//
+// 黄金向量那条测的是 VersionHash 本身；这里测 PutSource 有没有把定义里的
+// strategy_id / carrier / abi_version / scope / entry 逐个搬对。定义带了
+// capability——它不在六项里，若哪天被顺手塞进 hash，这条会与契约分叉。
+func TestPutSource_ProducesContractHash(t *testing.T) {
+	svc, _ := newHarness(t, nil)
+	def := mustCreateWasm(t, svc, "on_bar/1", contracts.ScopeSymbol)
+	v := mustPutSource(t, svc, def.ID, "x")
+
+	want := contracts.StrategyVersionInput{
+		StrategyID: def.ID,
+		Carrier:    string(CarrierWASM),
+		ABIVersion: "on_bar/1",
+		Scope:      contracts.ScopeSymbol,
+		Entry:      "OnBar",
+		Source:     "x",
+	}.MustHash()
+	if v.VersionHash != want {
+		t.Fatalf("PutSource hash = %s, contract hash = %s", v.VersionHash, want)
 	}
 }
 

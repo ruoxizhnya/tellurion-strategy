@@ -139,9 +139,9 @@ func (s *Service) PutSource(ctx context.Context, id, source string) (Version, er
 	if err := def.Validate(); err != nil {
 		return Version{}, err
 	}
-	hash, err := VersionHash(VersionInput{
+	hash, err := VersionHash(contracts.StrategyVersionInput{
 		StrategyID: def.ID,
-		Carrier:    def.Carrier,
+		Carrier:    string(def.Carrier),
 		ABIVersion: def.ABIVersion,
 		Scope:      def.Scope,
 		Entry:      def.Entry,

@@ -22,38 +22,27 @@ const (
 	MaxMemoryLimitBytes int64 = 64 << 20
 )
 
-// DomainStrategyVersionHash 是 version_hash 的域标签。
+// version_hash 的输入形状与域标签**都归 contracts**（QT-22 裁死的六项，G5 ③ 收编）。
 //
-// ⚠️ 收口说明（2026-10-23）：contracts 的 provenance.go 只冻结了 artifact_hash /
-// dataset_snapshot_hash / run_spec_hash 三个域；version_hash 的设计口径在
-// strategy-asset-service-api.md §2，但域标签还没进 contracts。本仓先在此处定义
-// 并登记为跨仓风险（docs/TASKS.md QT-41 风险条），收编时以 contracts 为准并加一条
-// 兼容性说明：**改域标签会让所有历史 version_hash 失效**，必须升 v1 → v2。
-const DomainStrategyVersionHash = "tellurion.strategy_version_hash.v1"
-
-// VersionInput 是 version_hash 的全部决定性输入。
+// 本仓不再定义第二份输入类型或域标签常量：
+//   - 域标签 `tellurion.strategy_version_hash.v1` 与收编前逐字节相同，历史
+//     version_hash 全部仍然有效（黄金向量 `TestVersionHash_MatchesContractGoldenVector`）；
+//   - 改域标签或改六项 = 所有历史 version_hash 失效（它是资产四张表的键，还折进
+//     `run_spec_hash`），只能升 v2 并走双标签过渡，不能就地改。
 //
-// 与设计 §2 一致：strategy_id + carrier + abi_version + scope + entry + source。
-// capability 不在其中（设计如此）：它只参与路由，不改变源码语义；这条取舍登记在
-// docs/TASKS.md 的风险条里，改口径 = 让所有历史 version_hash 失效。
-type VersionInput struct {
-	StrategyID string
-	Carrier    Carrier
-	ABIVersion string
-	Scope      contracts.StrategyScope
-	Entry      string
-	Source     string
-}
+// capability 不在六项里（设计如此）：它只参与路由，不改变源码语义；这条取舍见
+// contracts.StrategyVersionInput 的注释与 docs/TASKS.md 的 QT-41 风险条。
 
 // VersionHash 用 contracts 的唯一编码器算源码版本 hash。
 //
-// 不允许本仓自己 `json.Marshal + sha256`（编码不确定性会让同源码得到两个 hash，
-// 同样内容在不同进程里无法对齐）。
-func VersionHash(in VersionInput) (string, error) {
+// 校验留在本仓（错误语义 / HTTP wire code 不变），编码与域标签一律委托
+// `contracts.StrategyVersionInput.Hash()`——不允许本仓自己 `json.Marshal + sha256`，
+// 也不允许照抄一份 canonical 段：两份编码迟早漂，而同源码必须只有一个 hash。
+func VersionHash(in contracts.StrategyVersionInput) (string, error) {
 	if strings.TrimSpace(in.StrategyID) == "" {
 		return "", fmt.Errorf("%w: strategy_id is required", ErrInvalidDefinition)
 	}
-	if !in.Carrier.Valid() {
+	if !Carrier(in.Carrier).Valid() {
 		return "", fmt.Errorf("%w: unknown carrier %q", ErrUnsupportedCarrier, in.Carrier)
 	}
 	if !in.Scope.Valid() {
@@ -69,14 +58,7 @@ func VersionHash(in VersionInput) (string, error) {
 		return "", fmt.Errorf("%w: %d bytes > %d", ErrSourceTooLarge, len(in.Source), MaxSourceBytes)
 	}
 
-	c := contracts.NewCanonical(DomainStrategyVersionHash)
-	c.Str("strategy_id", in.StrategyID)
-	c.Str("carrier", string(in.Carrier))
-	c.Str("abi_version", in.ABIVersion)
-	c.Str("scope", string(in.Scope))
-	c.Str("entry", in.Entry)
-	c.Str("source", in.Source)
-	return c.Hex()
+	return in.Hash()
 }
 
 // ArtifactHash 是字节码的 sha256。
