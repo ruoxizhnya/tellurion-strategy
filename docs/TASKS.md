@@ -11,6 +11,8 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > 每张单六字段（① 目标 ② 上下文 ③ 要求 ④ 约束与非目标 ⑤ 验收 ⑥ 边界），判据见 `tellurion:AGENTS.md` §8.5。
 > 完成即标 ✅（附日期）并移入 `docs/archive/TASKS-YYYY-MM-DD-archived.md`；本文件只留未完成项。
 
+> **第三轮裁决指针（2026-10-25）**：⑫ promote 审批人 = **面 B1**：core 作唯一对外入口（JWT `sub` → 受信 `X-Actor` + service token）；本仓**只对 `/promote` + 两条 `/internal/*`** 引 kit `auth/httpadapter` 的 service-token 校验（= 本仓首次引 kit），`X-Actor` 缺失 400 `actor_required`，promote 落审计（人/时间/结论）；端口仅集群内/回环，其余 9 条靠端口隔离并在 `api-schema.md` 写明。正文见 `tellurion:docs/design/qt-decoupling/cross-repo-decision-record-2026-10-25.md` §五。
+
 ---
 
 ## 一、本仓任务
