@@ -46,7 +46,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 
 > **⛔ 开工前置复核（2026-10-26，未开工）**：
 > - **core promote 闸（QT-32）未开**：本仓 `/promote`（`internal/httpapi/api.go:46`）今天无鉴权、无审计；不会在闸门未定时先接 core。
-> - **`SVC-CORE-STRAT-RETIRE` 未立单**：core 本地注册表退役没有归属单，G3 只能停在「本仓就绪」。
+> - ~~**`SVC-CORE-STRAT-RETIRE` 未立单**：core 本地注册表退役没有归属单，G3 只能停在「本仓就绪」。~~ → **已立单（2026-10-26 同日补）**：条目在 `tellurion:docs/TASKS.md:130`「六之二、退役执行单」，串行第 6，判据逐字抄 B 组材料 §4.3。G3 仍受「本仓就绪 + 退役单可派发」两条约束，但**不再有「找不到归属单」这一条**。
 > - **鉴权腿无法自行闭合**：`go.mod` 无 `tellurion-kit`，三条受保护路由（`/promote` + 两条 `/internal/*`）要引 `kit v0.1.4` 的 service-token 校验——属跨仓 pin，报协调者，不自行 `go get`。
 > - **题干订正（实测）**：`rg -n "promoted" internal/asset/pgstore.go` 只命中注释与 `asset.StatusPromoted` 常量（`:403` / `:430`），**`:393` 附近没有硬编码字符串**；本轮未动 `internal/asset`。
 
@@ -304,6 +304,33 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > **⚠️ 开工前置（refactor-plan-review M5/M8，2026-10-20 登记；2026-10-22 本仓 M8 已做完）**：本表任何单开工前，必须先过 core `tellurion:docs/TASKS.md`「五、X 线」的**公共前置**两条：① 建仓/升格前先与 ADR-027 §2 对账（12 仓是上限/当前规划，不是承诺终态）—— ✅ **M5 已结案**，结论在 `tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2（六仓 ≠ 六进程，`strategy` 在服务拓扑里**有位子**，容器升格仍需一条 ADR）；② 本仓设计文档先写「**接口对表**」小节（签名 + 错误语义 + 版本策略）—— ✅ **M8 已落**，见本仓 [`api-schema.md`](api-schema.md) §6（9 端点 + 五道门逐项对表，附七条前提偏差）。**未对表不开工**这条对本仓两张单已解除。
 > 模板：`tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1。
 > ~~模板见 `target-module-topology.md` UnifiedDataPoint 节~~ —— 那是**幻影节名**（core 全文 grep `UnifiedDataPoint` 在该文件 0 命中），2026-10-22 改指 §4.1。正文以彼处为准，此处只留指针、不镜像。
+
+### SVC-STRAT-G1 · 服务就绪门 G1：鉴权 · 公开健康端点 · 错误模型 · 版本化（ADR-036）[P0] ⬜
+
+- **① 目标**：本仓 10+2 条端点满足 ADR-036 §3 的 G1——版本化 API、错误模型、鉴权/授权、幂等、分页/限流——其中**鉴权是已知缺口，不是新需求**。
+- **② 上下文**：`internal/httpapi/api.go:46` 的 `POST /api/strategies/{id}/versions/{hash}/promote` 今天**无鉴权、无审计**（本仓 G0 与 G3 两条单的「如实登记」都点名过它：「promote 鉴权缺口未修——属 G3 / QT-32 闸门，不能在本轮自行引入 kit」）；`go.mod` **未引入 kit**（实测直接依赖 = contracts `v0.5.0` + pgx `v5.7.3` + testify）；公开 `/healthz` 未落（G0 因此只能用 TCP 探针）；`/readyz` 全 workspace 0 命中。**已裁的姿势**：第三轮裁决 ⑫「promote 审批人 = 面 B1」——core 作唯一对外入口（JWT `sub` → 受信 `X-Actor` + service token），本仓**只对 `/promote` + 两条 `/internal/*`** 引 kit `auth/httpadapter`，`X-Actor` 缺失 400 `actor_required`，promote 落审计（人/时间/结论），其余 9 条靠端口隔离并在 `api-schema.md` 写明。
+- **③ 要求**：① 引 kit `v0.1.4`（首次引，须先在本仓 `AGENTS.md` §4 依赖表登记，再改 `go.mod`）+ 建 `policy.go` 策略表，档位按裁决 ⑫ 只开三条；② `/promote` 落审计行（人 / 时间 / 结论），`X-Actor` 缺失 400；③ 公开 `/healthz`（无鉴权）+ 新增 `/readyz`（PG 池可连 + 本仓迁移已执行）；④ 错误模型闭合：`internal/asset/errors.go` 的哨兵（含编译/资产四哨兵）→ HTTP 码逐条列进 `api-schema.md`，未列出的视为缺陷；⑤ 版本化与兼容策略成文（加字段 MINOR / 改语义 MAJOR）；⑥ 列表端点给分页或显式「整段返回」+ 上界；⑦ 编译 job 的 `POST .../build` 幂等键语义成文（同一 `(strategy, version)` 重复请求不得排两份 job）。
+- **④ 约束与非目标**：不做全站鉴权（按裁决 ⑫ 只三条，其余靠端口隔离）；不接 core 侧客户端（属 `SVC-STRAT-G3`）；不把编译器与资产服务合进程；不引入 K8s；不改 `internal/asset` 的资产/编译业务逻辑；不动 contracts pin（`v0.5.0` → 升 `v0.6.0` 若需要，走单独一笔并核 `StrategyRef` 等已用符号）。
+- **⑤ 验收**：① 三条档位用例：无 token → 401/403、`role=service` → 放行三条、放行其余 9 条中的任一条即红（证明档位真的是白名单）；② `X-Actor` 缺失 → 400 `actor_required` 且**不写审计行**；③ `/healthz` 200 无鉴权、`/readyz` 无 PG → 503（两条各一条用例）；④ `api-schema.md` 每条端点有版本 + 错误码，哨兵表与实现逐条对得上；⑤ 三条命令单仓绿。
+- **⑥ 边界**：本仓接口与鉴权；core 的 resolve/promote 客户端与 `strategies` 表停写归 `SVC-STRAT-G3` + `tellurion:SVC-CORE-STRAT-RETIRE`。
+
+### SVC-STRAT-G2 · 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ⬜
+
+- **① 目标**：本仓五张 `strategy.*` 表的 DDL 归属可自证——迁移可重复执行、不跨 schema 写、每张表「谁写」有答案；同时把「core 的 `strategies` 表还在被谁写」这条**双 owner 事实**如实登记，不假装 G2 已过。
+- **② 上下文**：`internal/asset` 有 Memory + PG 两个 Store、启动迁移、两级缓存、14 个内置策略登记；本仓 `db-schema.md` 已声明五张表；但**定义的真相源今天仍在 core**（`quant.strategies` + core 本地注册表，实测 core 侧写点见 `tellurion:pkg/storage/strategies.go` 的 5 个方法 + `cmd/analysis/setup.go:336` 的 `SeedStrategies`），ADR-036 §5.2 明写双 owner 是**迁移中的临时状态**，G2 的验收是「它的表只有它写」⇒ **本仓 G2 在 core 停写前不可能 ✅**，本单交付的是「本仓这一半的自证 + 缺口登记」。跨仓待核 K5（软删/版本语义对齐）未答。
+- **③ 要求**：① 迁移重放自证：同一测试库连跑两次 DDL，行数 / `pg_indexes` / 列集指纹逐位不变（`STRATEGY_TEST_DSN` 腿，无库 skip）；② 禁跨 schema 写护栏：静态扫本仓 SQL，出现 `quant.` / `public.` / `market.` / `run.` 等非本仓 schema 的写语句即红；③ `strategy.strategy_definitions` 与 core `strategies` 的**软删语义与版本链对照表**（逐列：删除是 `deleted_at` 还是行消失、版本号从哪来、`version_hash` 怎么算），这是 K5 的答卷，也是 `SVC-CORE-STRAT-RETIRE` 的前置；④ 在 `db-schema.md` 里把「今天谁写」按列写实（双 owner 状态 + 指向 core 的具体行号），不许写成目标态。
+- **④ 约束与非目标**：不 `DROP` / 不搬迁任何表；不改 core 的 `strategies` 写点（那是 core 侧退役单，串行第 6）；不新建第六张表来「绕过」语义对齐；不在本单接 core 客户端。
+- **⑤ 验收**：① 重放腿两次指纹逐位相同（贴输出）；② 破坏验证：往本仓 SQL 常量加一行 `UPDATE quant.strategies` ⇒ 护栏红，还原复绿；③ K5 对照表逐列有出处（`repo:path:line`），并能被 core 侧反查；④ `db-schema.md` 的「今天谁写」与 core 实测一致（抽 2 行核对）；⑤ 三条命令绿。
+- **⑥ 边界**：本仓 schema 自证 + K5 答卷；停写与删除归 `SVC-STRAT-G3` 与 `tellurion:SVC-CORE-STRAT-RETIRE`。
+
+### SVC-STRAT-G4 · 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036）[P1] ⬜
+
+- **① 目标**：把「编译链路挂了会怎么样、多久放弃、怎么查、怎么回滚」成文并跑过一次——本仓的外部依赖（TinyGo 工具链 / `cmd/compiler` 子进程）是全系统最容易静默失败的一环。
+- **② 上下文**：QT-41c 已落跨进程闭环：`POST .../build` → `internal/compilerclient` 派发 `cmd/compiler` → 内部端点回写 `queued → running → succeeded | failed`（失败带 `error_code`），`-compiler-bin` 为空时 build 端点 fail-closed 503 `compile_unavailable`；G5 已落编译 job 的队列 / 重试 / 限并发；本仓 `docs/evidence/QT-41b-tinygo-0.34.0.md` 有真工具链取证姿势。**缺口**：无 runbook（全 workspace `runbook` 只在 ADR-036 正文里出现）；无 `/readyz`（属 `SVC-STRAT-G1` ③）；子进程超时上界与「编译器进程被 OOM killer 杀掉」这类失败在文档里没有位置；`STRATEGY_TINYGO_IMAGE` 腿的 skip 与 fail 未区分口径。
+- **③ 要求**：① 失败语义表：`compile_unavailable` / `ErrCompileFailed` / `ErrSourceTooLarge` / `ErrArtifactTooLarge` / 派发失败 / 回写失败（内部端点不可达）/ 超时七类，各给「HTTP 码、是否重试、job 终态、调用方该做什么」；② `cmd/compiler` 子进程给**显式超时上界 + `CommandContext`**（core 侧 AUD-56 的同型坑：`go build` 联网解析挂 601s，加 `CommandContext` + 120s 上界后 6.18s），超时后 job 落 `failed` 且有 `error_code`，不许留在 `running`；③ 重试边界成文（哪些错误码可重试、几次、退避）；④ `docs/runbook.md`：起停、看编译 job 状态、重放迁移、真工具链验证（`STRATEGY_TINYGO_IMAGE` 那条）、卡死 job 的人工收口；⑤ 一次故障演练：把 `-compiler-bin` 指向不存在的文件 ⇒ 503 且不静默成功，恢复后复通。
+- **④ 约束与非目标**：不改资产/编译的业务口径；不引 APM；不做多副本；不在本单把 TinyGo 版本升级（锁 0.34.0 是既有裁决，动它另立单）；不接 core 消费面。
+- **⑤ 验收**：① 失败语义表七类齐全且每条有用例或指明无用例原因；② 超时用例：注入一个永不退出的假 compiler ⇒ 到上界即 `failed` 且有 `error_code`（破坏验证：去掉上界 ⇒ 用例红）；③ 演练有真退出码（503 → 恢复 200）；④ runbook 每条命令当场执行过；⑤ 三条命令绿。
+- **⑥ 边界**：本仓失败语义与运维面；core 侧的运行时 WASM host 留 core（ADR-036 §6 第 1 条），不在本单。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 
