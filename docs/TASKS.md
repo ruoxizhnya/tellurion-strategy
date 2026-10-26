@@ -19,6 +19,37 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 
 > **约定变更（2026-10-21）**：原「占位仓不写正式六字段任务单」作废——X 线任务单已展开为本仓正式任务（见下）。M5/M8 开工前置不变；实现仍未开工，开工前仍须过前置两条。
 
+### SVC-STRAT-G0 · 服务就绪门 G0：自有部署与本地启动（ADR-036）[P0] ✅（2026-10-26）
+
+- **① 目标**：资产服务与编译器都能独立构建、启动/执行；资产服务可被健康检查。
+- **② 上下文**：ADR-036 定本仓为服务；今天有 `cmd/assetservice` + `cmd/compiler` + 5 张 `strategy.*` 表，但无 `Dockerfile` / `deploy/`，默认 `:8085` 与 analysis-service 撞号，且未引 kit 鉴权。
+- **③ 要求**：新增 `Dockerfile`（资产服务）与 `Dockerfile.compiler`（批处理镜像）；新增 `deploy/compose.yaml`（`STRATEGY_DATABASE_URL`、artifact cache dir、端口 `:8090`）；**默认监听改 `127.0.0.1:8090`**（代码 + 文档 + ARCHITECTURE）；README 写单仓启动命令与 compiler 用法；健康检查用 TCP 探针（公开 `/healthz` 归 G1）。
+- **④ 约束与非目标**：不改资产/编译逻辑；不接 core resolve/promote（G3）；不把编译器和资产服务合进程；不引入 K8s。
+- **⑤ 验收**：`docker compose -f deploy/compose.yaml config` 通过；资产服务启动后 TCP `8090` 可连；compiler 镜像能处理一个 job JSON；`:8085` 不再被本仓占用；无 `replace` / `go.work`。
+- **⑥ 边界**：只改本仓 deployment 与默认端口；core 侧消费由 `SVC-STRAT-G3` 跟踪。
+
+> **施工记录（2026-10-26）**：
+> - **落点**：`Dockerfile`（多阶段、非 root、`netcat-openbsd`、`HEALTHCHECK nc -z 127.0.0.1 8090`）、`Dockerfile.compiler`（批处理镜像，**无 healthcheck**）、`deploy/compose.yaml`（服务名 `strategy`、`STRATEGY_DATABASE_URL`、`/data/artifacts` 卷、`127.0.0.1:8090:8090`）；`cmd/assetservice/main.go` 默认 `-addr` 改 `127.0.0.1:8090`；`docs/ARCHITECTURE.md` 与 README 同步端口，README 补资产服务 / compose / compiler 启动与用法。
+> - **验收（真实输出）**：`docker compose -f deploy/compose.yaml config -q` → exit 0；`config --services` → `strategy`；`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿（7 包，`cmd/assetservice 0.157s`、`cmd/compiler 1.506s`）；`gofmt -l .` 空。
+> - **破坏验证**：在 compose 临时给 `strategy` 加 `depends_on: missing-svc` → `config -q` 退出非 0（`service "strategy" depends on undefined service "missing-svc"`）→ 逐字节还原后复绿（exit 0，SHA256 一致）。
+> - **审查修复（2026-10-26，容器启动即退出）**：首版镜像以 `USER nobody` 运行，但 `defaultCacheDir()` 走 `os.UserCacheDir()`，nobody 的 HOME 是 `/` ⇒ `assetservice: asset: cache dir: mkdir /.cache: permission denied`，进程启动即退；compose 的命名卷 `strategy-artifacts` 首次挂载为 root 属主，同样不可写。修复（只动 `Dockerfile`，不碰 `internal/asset`）：`RUN mkdir -p /data/artifacts && chown 65534:65534 /data/artifacts` + `ENV XDG_CACHE_HOME=/tmp/.cache`（不传 `-cache-dir` 时缓存落到人人可写的 `/tmp`）。实测：裸跑（默认缓存）与挂命名卷（`-cache-dir /data/artifacts`）两种形态 TCP `8090` 均通、`docker inspect` → `healthy`。
+> - **如实登记**：`internal/asset` 业务逻辑未动；未引 `tellurion-kit`；公开 `/healthz` 仍未落（归 G1），故 G0 只能 TCP 探针；promote 鉴权缺口（`internal/httpapi/api.go:46`）**未修**——属 G3 / QT-32 闸门，不能在本轮自行引入 kit。
+
+### SVC-STRAT-G3 · core 消费与本地注册表退役（ADR-036）[P0] ⛔（2026-10-26 复核：前置未开）
+
+- **① 目标**：core 的策略资产解析/注册/promote 走本仓；core 本地 `strategies` 表与资产注册表退役，运行时 `pkg/strategy` 保留。
+- **② 上下文**：本仓 12 端点已实装，但 core 零调用方，`/promote` 零调用；core 仍以 `quant.strategies` + 本地注册表为真相。
+- **③ 要求**：本仓先引 kit `v0.1.4` 鉴权（`/promote` + `/internal/*`）；core 加 resolve/写侧客户端；按四步迁移定义与版本；停写 `strategies` 表；保留运行时引擎与内置策略，只退役资产注册；promote 闸门走本仓审计。
+- **④ 约束与非目标**：不把信号计算/回测搬进本仓；不迁内置策略全量；不改 `version_hash` 编码；不做对象存储。
+- **⑤ 验收**：core 侧 `strategies` 表零写入；core `/promote` 真实调用本仓；资产版本与 core 原定义逐条对拍；旧注册表删除或只读。
+- **⑥ 边界**：本仓只保证资产面；core 代码删除由 `SVC-CORE-STRAT-RETIRE` 跟踪。
+
+> **⛔ 开工前置复核（2026-10-26，未开工）**：
+> - **core promote 闸（QT-32）未开**：本仓 `/promote`（`internal/httpapi/api.go:46`）今天无鉴权、无审计；不会在闸门未定时先接 core。
+> - **`SVC-CORE-STRAT-RETIRE` 未立单**：core 本地注册表退役没有归属单，G3 只能停在「本仓就绪」。
+> - **鉴权腿无法自行闭合**：`go.mod` 无 `tellurion-kit`，三条受保护路由（`/promote` + 两条 `/internal/*`）要引 `kit v0.1.4` 的 service-token 校验——属跨仓 pin，报协调者，不自行 `go get`。
+> - **题干订正（实测）**：`rg -n "promoted" internal/asset/pgstore.go` 只命中注释与 `asset.StatusPromoted` 常量（`:403` / `:430`），**`:393` 附近没有硬编码字符串**；本轮未动 `internal/asset`。
+
 ### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ✅（2026-10-24 G4 收口；余项为非目标/跨仓指针）
 
 > **迁入说明（2026-10-21）**：本单自 core 仓 `tellurion:docs/TASKS.md`「五、X 线」迁入（任务台账批量重分布：X 线单展开到各服务仓为正式六字段单，「占位仓不写正式任务单」旧约定同时作废）。六字段正文逐字保留、不改写；core 侧同号条目已改为指针。
@@ -31,7 +62,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 - **⑥ 边界**：只做资产与解析；编译服务是独立单 **QT-41b**（本单 ①~⑤ 不含编译链路）。
 
 > **🔶 开工前置状态（2026-10-22）**：M8「接口对表」**已做完** → 本仓 `docs/api-schema.md` §6（写侧 7 端点 + 读侧 2 端点逐条签名 / 错误语义 / 版本策略 / 今天的实物）。
-> M5 ✅ 已结案。⇒ **本单只剩一条前置：QT-05（S1 契约层落码）**——contracts 今天零符号，而本仓 module path 是单段短名 + 禁 `replace ../`，拿不到协议类型就写不了任何 handler。
+> ~~M5 ✅ 已结案~~ → **已被 ADR-036（2026-10-26）取代**：本仓定位为服务，G0 补 `Dockerfile + deploy`（`SVC-STRAT-G0`）。⇒ 本单剩余前置为 QT-05（S1 契约层落码；已落）与 G1 鉴权/契约版本。
 > 对表逮出**七条前提偏差**（§6.5），其中两条要主任裁：**#1** 新列到底是 6 还是 7（`active_artifact_hash` 只在工单里有）、**#4** `abi_version` 设计四个取值而 `contracts` 只认 `on_bar/1|2`。
 > 另两条会直接误导第一行代码：**#3** `version_hash` 策略侧零实现、`ArtifactHash()` 生产路径零调用方；**#5** 设计的 9 个哨兵错误代码里一个都不存在（其中两个与既有 `ErrAbiVersionMismatch` / `ErrImportNotWhitelisted` 语义重叠，另造就是两处真相）。
 > 状态保持 ⬜ 未开工是对的，但前置已从「两项 + 一堆假设」收敛为「只剩 QT-05」。
@@ -50,7 +81,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 >   immutable / 304。
 > - `internal/compile`：`Runner`（`-target=wasm-unknown` 精确 token 检查、env 白名单、64 KiB 日志截断、超时、超限 fail-loud）。
 > - `internal/compilerjob`：编译 → `artifact_hash` → 内部登记端点回填（hash 与 imports 双向自证）。
-> - `cmd/assetservice`（`127.0.0.1:8085`）/ `cmd/compiler`（读 job JSON、严格解码、stdout 回执）。
+> - `cmd/assetservice`（`127.0.0.1:8090`；ADR-036 起默认端口从 8085 改为 8090，避开 analysis-service）/ `cmd/compiler`（读 job JSON、严格解码、stdout 回执）。
 > - 测试：`internal/asset`（服务语义 + DDL 形状 + 五道门）、`internal/httpapi`（9 端点全生命周期 + 20 条 wire code 表驱动 +
 >   幂等/歧义/撒谎字节）、`internal/compile`（真子进程假工具链，含 env 白名单泄露红线）、`internal/compilerjob`（真 Service + httptest）。
 > - 文档：`docs/api-schema.md` §1/§2 按实现重写；`docs/db-schema.md` §1/§4/§5/§6 更新；`docs/adr/0002-artifact-主键与生效字节的裁决.md`。

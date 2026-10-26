@@ -8,7 +8,7 @@ import (
 func fullCompilerConfig() externalCompilerConfig {
 	return externalCompilerConfig{
 		Bin:              "C:/tools/compiler.exe",
-		AssetURL:         "http://127.0.0.1:8085",
+		AssetURL:         "http://127.0.0.1:8090",
 		ToolchainName:    "tinygo",
 		ToolchainVersion: "0.34.0",
 		ToolchainPath:    "C:/tools/tinygo.exe",

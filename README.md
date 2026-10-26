@@ -9,7 +9,7 @@
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/assetservice/` | 资产服务进程入口（`127.0.0.1:8085`；DSN 非空走 PG 并在启动时迁移，否则 Memory） |
+| `cmd/assetservice/` | 资产服务进程入口（`127.0.0.1:8090`；DSN 非空走 PG 并在启动时迁移，否则 Memory） |
 | `cmd/compiler/` | 编译服务进程入口（读一批 job JSON → 队列限并发 / 重试 → 编译 → 内部端点登记 artifact；逐作业终态可检索） |
 | `internal/asset/` | 领域核心：模型 / `VersionHash` / `Verify` / `WasmImports` / Store 端口 + `Memory`/`PG` / DDL / `Service` / 两级缓存 / 内置登记 / so 符号校验 |
 | `internal/httpapi/` | 传输层：标准库 `net/http` 的 10 个公开端点 + 1 个内部登记端点 |
@@ -32,8 +32,17 @@ go test ./...
 跑起来：
 
 ```bash
+# 资产服务（本机直跑；默认 127.0.0.1:8090）
 STRATEGY_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/tellurion?sslmode=disable' \
-  go run ./cmd/assetservice -addr 127.0.0.1:8085
+  go run ./cmd/assetservice
+
+# 或容器（单仓 compose；PG 默认 host.docker.internal:5432）
+docker compose -f deploy/compose.yaml up --build
+
+# 编译器是批处理，不是常驻服务：镜像用 Dockerfile.compiler 构建；
+# 必填 -job / -asset-url / -toolchain-*，参数模板用 -arg（须含 {src}、{out}
+# 与 -target=wasm-unknown）。完整旗标见：
+go run ./cmd/compiler -h
 ```
 
 不设 DSN 时退回内存 Store（日志会明确标注非持久化）。PG 集成测试用 `STRATEGY_TEST_DSN` 显式开启；

@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# tellurion-strategy · 编译进程镜像（批处理，不是常驻服务）
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /src
+RUN apk add --no-cache git
+
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0 GOOS=linux
+RUN go build -trimpath -ldflags "-s -w" -o /out/compiler ./cmd/compiler
+
+FROM alpine:3.19
+
+WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata && \
+    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone && \
+    rm -rf /var/cache/apk/*
+
+COPY --from=builder /out/compiler /app/compiler
+
+USER nobody
+ENTRYPOINT ["/app/compiler"]

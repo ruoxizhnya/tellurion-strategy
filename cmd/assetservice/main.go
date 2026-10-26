@@ -39,7 +39,7 @@ func (f *repeatableFlag) Set(v string) error {
 }
 
 func run() error {
-	addr := flag.String("addr", "127.0.0.1:8085", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	dsn := flag.String("dsn", os.Getenv("STRATEGY_DATABASE_URL"),
 		"PostgreSQL DSN; empty selects the in-memory store (non-persistent)")
 	cacheDir := flag.String("cache-dir", defaultCacheDir(),

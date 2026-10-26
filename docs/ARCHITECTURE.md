@@ -39,7 +39,7 @@ verified-by: QT-41c 跨进程编译闭环——新增 `internal/compilerclient` 
 
 ```
 cmd/
-  assetservice/      进程入口：DSN → asset.OpenPG + PG.Migrate → httpapi.New + http.Server（127.0.0.1:8085）；
+  assetservice/      进程入口：DSN → asset.OpenPG + PG.Migrate → httpapi.New + http.Server（127.0.0.1:8090，ADR-036）；
                      DSN 为空才用 Memory（日志标注非持久化）。`-compiler-bin` 非空时装配
                      internal/compilerclient（外部编译进程）；为空则 Compiler=nil，build 端点 503
   compiler/          进程入口：读一批 job JSON → internal/compilerjob.Queue → internal/compile.Runner
