@@ -6,13 +6,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
 
@@ -24,41 +27,147 @@ const (
 	maxJSONBody        = 2 << 20
 	maxRegisterBody    = 12 << 20
 	codeInvalidRequest = "invalid_request"
+
+	// actorHeader 是 core 鉴权后转发的受信头（裁决 ⑫ 面 B1）。本仓只校验非空，
+	// 审批人身份的真伪由 core 的入口闸保证。
+	actorHeader = "X-Actor"
+
+	// readyzTimeout 是就绪检查上界：探针是 1s 级的东西，库卡住必须明确报
+	// not_ready，而不是把调用方挂在这里。
+	readyzTimeout = 3 * time.Second
+
+	// 版本列表分页（G1 ⑥）：默认 200、上界 1000。整段返回无上界等于让一个
+	// 策略的版本数决定响应体大小。
+	defaultVersionLimit = 200
+	maxVersionLimit     = 1000
 )
 
-// API 是 9 个公开端点 + 1 个内部登记端点的路由器。
+// HTTP 层新增的哨兵（不是领域码：它们描述的是闸门/传输，不是资产语义）。
+var (
+	errAuthUnavailable = errors.New("auth gate is not configured")
+	errRateLimited     = errors.New("request rate exceeded")
+	errActorRequired   = errors.New("actor is required")
+	errAuditFailed     = errors.New("promotion audit failed")
+)
+
+// API 是 10 个公开端点 + 2 个内部端点 + 2 个探针的路由器。
 type API struct {
-	svc *asset.Service
-	mux *http.ServeMux
+	svc          *asset.Service
+	mux          *http.ServeMux
+	authorizer   Authorizer
+	limiter      *rateLimiter
+	readiness    func(context.Context) error
+	promotionLog asset.PromotionLog
+}
+
+// Option 按需装配鉴权闸、限流、就绪检查与 promote 审计。
+type Option func(*API)
+
+// WithReadiness 注入就绪检查（G1 ③）：`/readyz` = PG 池可连 + 本仓迁移已执行。
+// 不注入 ⇒ 503（内存 Store 的进程就是没接库，不应被读成就绪）。
+func WithReadiness(check func(context.Context) error) Option {
+	return func(a *API) { a.readiness = check }
+}
+
+// WithPromotionLog 注入 promote 审计。`cmd/assetservice` 两种存储形态都装配；
+// 未装配时（单仓测试）promote 不写审计行。
+func WithPromotionLog(l asset.PromotionLog) Option {
+	return func(a *API) { a.promotionLog = l }
+}
+
+// WithRateLimit 覆盖默认限流（每秒 perSecond 个令牌、突发 burst）。
+// perSecond <= 0 或 burst <= 0 ⇒ 关闭限流（仅测试用）。
+func WithRateLimit(perSecond float64, burst int) Option {
+	return func(a *API) {
+		if perSecond <= 0 || burst <= 0 {
+			a.limiter = nil
+			return
+		}
+		a.limiter = newRateLimiter(perSecond, float64(burst))
+	}
 }
 
 // New 装配路由。
-func New(svc *asset.Service) (*API, error) {
+func New(svc *asset.Service, opts ...Option) (*API, error) {
 	if svc == nil {
 		return nil, errors.New("httpapi: service is required")
 	}
-	a := &API{svc: svc, mux: http.NewServeMux()}
-
-	a.mux.HandleFunc("POST /api/strategies", a.createDefinition)
-	a.mux.HandleFunc("PUT /api/strategies/{id}/source", a.putSource)
-	a.mux.HandleFunc("POST /api/strategies/{id}/build", a.submitBuild)
-	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/validate", a.validateVersion)
-	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/promote", a.promote)
-	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/deprecate", a.deprecate)
-	a.mux.HandleFunc("GET /api/strategies/{id}/versions", a.listVersions)
-	a.mux.HandleFunc("GET /api/strategies/{id}/builds/{job_id}", a.getBuildJob)
-	a.mux.HandleFunc("GET /api/strategies/{id}/resolve", a.resolve)
-	a.mux.HandleFunc("GET /api/strategies/{id}/versions/{hash}/artifact", a.downloadArtifact)
-
-	// 内部面：编译服务回填 artifact / 回写 build job 状态。只登记、不 promote
-	// （promote 是人的闸门）；状态回写也只认作业自己的策略归属。
-	a.mux.HandleFunc("POST /internal/strategies/{id}/artifacts", a.registerArtifact)
-	a.mux.HandleFunc("POST /internal/strategies/{id}/builds/{job_id}", a.reportBuildJob)
+	a := &API{
+		svc:     svc,
+		mux:     http.NewServeMux(),
+		limiter: newRateLimiter(defaultRatePerSecond, defaultRateBurst),
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	a.register()
 	return a, nil
+}
+
+// register 挂路由。探针公开且不限流；`policy.go` 的三条走 requireAuth
+// （鉴权先于限流）；其余公开端点只限流（端口隔离是它们的边界，见 policy.go）。
+func (a *API) register() {
+	// 公开探针（G1 ③）：探针不鉴权、不限流——被限流会被调用方读成未登录。
+	a.mux.HandleFunc("GET /healthz", a.healthz)
+	a.mux.HandleFunc("GET /readyz", a.readyz)
+
+	// 受保护的三条（裁决 ⑫）。
+	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/promote", a.requireAuth(a.promote))
+	a.mux.HandleFunc("POST /internal/strategies/{id}/artifacts", a.requireAuth(a.registerArtifact))
+	a.mux.HandleFunc("POST /internal/strategies/{id}/builds/{job_id}", a.requireAuth(a.reportBuildJob))
+
+	// 其余公开端点：靠端口隔离，不在策略表里。
+	a.mux.HandleFunc("POST /api/strategies", a.openRoute(a.createDefinition))
+	a.mux.HandleFunc("PUT /api/strategies/{id}/source", a.openRoute(a.putSource))
+	a.mux.HandleFunc("POST /api/strategies/{id}/build", a.openRoute(a.submitBuild))
+	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/validate", a.openRoute(a.validateVersion))
+	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/deprecate", a.openRoute(a.deprecate))
+	a.mux.HandleFunc("GET /api/strategies/{id}/versions", a.openRoute(a.listVersions))
+	a.mux.HandleFunc("GET /api/strategies/{id}/builds/{job_id}", a.openRoute(a.getBuildJob))
+	a.mux.HandleFunc("GET /api/strategies/{id}/resolve", a.openRoute(a.resolve))
+	a.mux.HandleFunc("GET /api/strategies/{id}/versions/{hash}/artifact", a.openRoute(a.downloadArtifact))
 }
 
 // Handler 返回可挂到任意 http.Server 的路由。
 func (a *API) Handler() http.Handler { return a.mux }
+
+// ─── 探针 ──────────────────────────────────────────────────────
+
+func (a *API) healthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// readyBody 是 `/readyz` 的报文：`store` 说明检查的是哪一档
+// （`postgres` = 真库检查已注入；`unwired` = 没接库）。
+type readyBody struct {
+	Status string `json:"status"`
+	Store  string `json:"store"`
+	Error  string `json:"error,omitempty"`
+}
+
+// readyz 是就绪探针（G1 ③）：PG 池可连 + 本仓迁移已执行。
+// 与 `/healthz` 的分工：后者只回答「进程活着」，库挂了它也 200。
+func (a *API) readyz(w http.ResponseWriter, r *http.Request) {
+	if a.readiness == nil {
+		writeJSON(w, http.StatusServiceUnavailable, readyBody{
+			Status: "not_ready",
+			Store:  "unwired",
+			Error:  "STRATEGY_DATABASE_URL is empty: the in-memory store is not ready for business",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), readyzTimeout)
+	defer cancel()
+	if err := a.readiness(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, readyBody{
+			Status: "not_ready",
+			Store:  "postgres",
+			Error:  err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, readyBody{Status: "ready", Store: "postgres"})
+}
 
 // ─── 写侧 ──────────────────────────────────────────────────────
 
@@ -141,7 +250,18 @@ func (a *API) validateVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, artifactView(artifact))
 }
 
+// promote 是唯一带审计的写端点（G1 ②）：审批人取 core 鉴权后转发的受信
+// `X-Actor`，缺失即 400 actor_required 且**不写审计行**。
+//
+// 审计在 promote 成功之后追加（人 / 时间 / 结论）；写审计失败回 500
+// `audit_failed`——promote 可能已经生效，重试是安全的，但「悄悄丢审计」
+// 不是可接受的降级。
 func (a *API) promote(w http.ResponseWriter, r *http.Request) {
+	actor := strings.TrimSpace(r.Header.Get(actorHeader))
+	if actor == "" {
+		writeError(w, fmt.Errorf("%w: %s header is required", errActorRequired, actorHeader))
+		return
+	}
 	var req toolchainRequest
 	if !decodeOptionalJSON(w, r, maxJSONBody, &req) {
 		return
@@ -150,6 +270,22 @@ func (a *API) promote(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	if a.promotionLog != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), readyzTimeout)
+		defer cancel()
+		err := a.promotionLog.RecordPromotion(ctx, asset.PromotionEvent{
+			StrategyID:   artifact.StrategyID,
+			VersionHash:  artifact.VersionHash,
+			ArtifactHash: artifact.ArtifactHash,
+			Actor:        actor,
+			Outcome:      string(artifact.Status),
+			DecidedAt:    time.Now().UTC(),
+		})
+		if err != nil {
+			writeError(w, fmt.Errorf("%w: %v", errAuditFailed, err))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, artifactView(artifact))
 }
@@ -167,7 +303,14 @@ func (a *API) deprecate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, artifactView(artifact))
 }
 
+// listVersions 是 W7：无版本返回空切片（不是 null），支持 limit / offset
+// 分页（G1 ⑥）。上界见 maxVersionLimit。
 func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
+	limit, offset, err := parsePage(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	views, err := a.svc.ListVersions(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
@@ -177,7 +320,35 @@ func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
 	if views == nil {
 		views = []asset.VersionView{}
 	}
-	writeJSON(w, http.StatusOK, views)
+	if offset > len(views) {
+		offset = len(views)
+	}
+	end := offset + limit
+	if end > len(views) {
+		end = len(views)
+	}
+	writeJSON(w, http.StatusOK, views[offset:end])
+}
+
+// parsePage 解析 `?limit=&offset=`：缺省 200 / 0，上界 1000；非法值 400。
+func parsePage(r *http.Request) (int, int, error) {
+	limit := defaultVersionLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > maxVersionLimit {
+			return 0, 0, fmt.Errorf("%w: limit must be an integer in 1..%d", asset.ErrInvalidParameter, maxVersionLimit)
+		}
+		limit = n
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return 0, 0, fmt.Errorf("%w: offset must be a non-negative integer", asset.ErrInvalidParameter)
+		}
+		offset = n
+	}
+	return limit, offset, nil
 }
 
 // getBuildJob 是 build 的轮询端点：202 返回的 job_id 在进程重启后仍可查。
@@ -371,6 +542,20 @@ func writeError(w http.ResponseWriter, err error) {
 
 func classify(err error) (int, string) {
 	switch {
+	// ── 闸门 / 传输（G1，不是资产语义）──
+	case errors.Is(err, ErrUnauthenticated):
+		return http.StatusUnauthorized, "unauthenticated"
+	case errors.Is(err, ErrForbidden):
+		return http.StatusForbidden, "forbidden"
+	case errors.Is(err, errActorRequired):
+		return http.StatusBadRequest, "actor_required"
+	case errors.Is(err, errRateLimited):
+		return http.StatusTooManyRequests, "rate_limited"
+	case errors.Is(err, errAuthUnavailable):
+		return http.StatusServiceUnavailable, "auth_unavailable"
+	case errors.Is(err, errAuditFailed):
+		return http.StatusInternalServerError, "audit_failed"
+
 	case errors.Is(err, asset.ErrStrategyNotFound):
 		return http.StatusNotFound, "strategy_not_found"
 	case errors.Is(err, asset.ErrVersionNotFound):

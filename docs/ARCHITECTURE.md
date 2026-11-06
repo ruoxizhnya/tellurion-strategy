@@ -20,8 +20,8 @@ verified-by: QT-41c 跨进程编译闭环——新增 `internal/compilerclient` 
   validate / promote / deprecate        artifact —— 下载字节码
         │                                     │
         ↓                                     ↓
-  strategy.strategy_definitions / _versions / _artifacts / _artifact_blobs / _build_jobs
-                    （DDL 唯一 owner = 本仓）
+  strategy.strategy_definitions / _versions / _artifacts / _artifact_blobs / _build_jobs / _promotions
+                    （DDL 唯一 owner = 本仓；_promotions 是 promote 审计，append-only）
 ```
 
 ## 3. 组件职责
@@ -41,16 +41,20 @@ verified-by: QT-41c 跨进程编译闭环——新增 `internal/compilerclient` 
 cmd/
   assetservice/      进程入口：DSN → asset.OpenPG + PG.Migrate → httpapi.New + http.Server（127.0.0.1:8090，ADR-036）；
                      DSN 为空才用 Memory（日志标注非持久化）。`-compiler-bin` 非空时装配
-                     internal/compilerclient（外部编译进程）；为空则 Compiler=nil，build 端点 503
+                     internal/compilerclient（外部编译进程）；为空则 Compiler=nil，build 端点 503。
+                     JWT_SECRET 决定鉴权闸；无 secret 只允许回环 / 显式 loopback-published（启动闸拒绝其余）
   compiler/          进程入口：读一批 job JSON → internal/compilerjob.Queue → internal/compile.Runner
                      → 内部端点登记 artifact / 回写 running 与终态 → stdout / -report 输出逐作业终态与失败原因
 internal/
   asset/             领域核心：模型 / VersionHash / Verify / WasmImports / ImportPolicyFor
                      / Store 端口 + Memory 与 PG 实现 / Migrations()（幂等 DDL）/ Service（9 端点语义）
+                     / promotions.go（promote 审计端口 + PG/Memory 实现 + /readyz 的 PG Ready 检查）
                      / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
                      / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
                      / elf.go（carrier=so 的导出符号表校验：entry 必须是已定义 GLOBAL/WEAK 符号）
   httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 2 个内部端点（artifact 登记 / job 状态回写）
+                     + 2 个公开探针（/healthz /readyz）；policy.go 只给 /promote 与两条 /internal/* 挂
+                     kit service-token 闸；auth.go 鉴权先于限流；limit.go 按身份令牌桶
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、tinygo 强制 -no-debug、env 白名单、
                      toolchains.lock 二进制 sha256、超时、日志截断）
   compilerjob/       编译作业管线：Queue（批次排队 / 限并发 / 重试，状态词表与

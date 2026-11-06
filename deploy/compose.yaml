@@ -15,6 +15,10 @@ services:
       - "127.0.0.1:8090:8090"
     environment:
       STRATEGY_DATABASE_URL: ${STRATEGY_DATABASE_URL:-postgres://postgres:postgres@host.docker.internal:5432/tellurion?sslmode=disable}
+      # G1：容器内绑定 0.0.0.0，但端口只发布在宿主回环——显式声明这一点，
+      # 无 secret 时才允许开放访问（启动闸见 kit DecideStartup）。
+      JWT_SECRET: ${JWT_SECRET:-}
+      AUTH_INSECURE_EXPOSURE: ${AUTH_INSECURE_EXPOSURE:-loopback-published}
     volumes:
       - strategy-artifacts:/data/artifacts
     extra_hosts:

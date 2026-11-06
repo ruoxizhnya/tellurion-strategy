@@ -503,6 +503,35 @@ func (p *PG) GetJob(ctx context.Context, id string) (BuildJob, error) {
 	return job, nil
 }
 
+// ActiveJob 找同键未终态作业（幂等键，G1 ⑦）：多行时取最早创建的那条。
+func (p *PG) ActiveJob(ctx context.Context, strategyID, versionHash, toolchain string) (BuildJob, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, false, err
+	}
+	var (
+		job        BuildJob
+		finishedAt *time.Time
+	)
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, strategy_id, trim(version_hash), toolchain, state,
+		       trim(artifact_hash), error_code, error, created_at, finished_at
+		  FROM strategy.strategy_build_jobs
+		 WHERE strategy_id = $1 AND version_hash = $2 AND toolchain = $3
+		   AND state IN ('queued','running')
+		 ORDER BY created_at ASC, id ASC
+		 LIMIT 1`, strategyID, versionHash, toolchain).
+		Scan(&job.ID, &job.StrategyID, &job.VersionHash, &job.Toolchain, &job.State,
+			&job.ArtifactHash, &job.ErrorCode, &job.Error, &job.CreatedAt, &finishedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return BuildJob{}, false, nil
+	}
+	if err != nil {
+		return BuildJob{}, false, err
+	}
+	job.FinishedAt = finishedAt
+	return job, true, nil
+}
+
 // ─── 事务内与行扫描的共用件 ────────────────────────────────────
 
 type querier interface {

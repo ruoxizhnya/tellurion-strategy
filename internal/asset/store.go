@@ -39,6 +39,9 @@ type Store interface {
 	SaveJob(ctx context.Context, job BuildJob) error
 	UpdateJob(ctx context.Context, job BuildJob) error
 	GetJob(ctx context.Context, id string) (BuildJob, error)
+	// ActiveJob 是 build 的幂等键（G1 ⑦）：同 (strategy, version, toolchain)
+	// 已存在未终态（queued / running）作业时复用它，不再排第二份。
+	ActiveJob(ctx context.Context, strategyID, versionHash, toolchain string) (BuildJob, bool, error)
 }
 
 // Memory 是 Store 的内存实现（并发安全、深拷贝出入）。
@@ -366,6 +369,35 @@ func (m *Memory) GetJob(ctx context.Context, id string) (BuildJob, error) {
 		return BuildJob{}, fmt.Errorf("%w: %s", ErrJobNotFound, id)
 	}
 	return cloneJob(job), nil
+}
+
+// ActiveJob 找同键未终态作业；多行时取最早创建的那条（与 PG 的 ORDER BY 一致）。
+func (m *Memory) ActiveJob(ctx context.Context, strategyID, versionHash, toolchain string) (BuildJob, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, false, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var (
+		found BuildJob
+		ok    bool
+	)
+	for _, job := range m.jobs {
+		if job.StrategyID != strategyID || job.VersionHash != versionHash || job.Toolchain != toolchain {
+			continue
+		}
+		if job.State != JobQueued && job.State != JobRunning {
+			continue
+		}
+		if !ok || job.CreatedAt.Before(found.CreatedAt) ||
+			(job.CreatedAt.Equal(found.CreatedAt) && job.ID < found.ID) {
+			found, ok = job, true
+		}
+	}
+	if !ok {
+		return BuildJob{}, false, nil
+	}
+	return cloneJob(found), true, nil
 }
 
 func cloneJob(job BuildJob) BuildJob {

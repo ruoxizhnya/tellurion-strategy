@@ -33,8 +33,12 @@ go test ./...
 
 ```bash
 # 资产服务（本机直跑；默认 127.0.0.1:8090）
+# JWT_SECRET 与 core 共享：/promote 与两条 /internal/* 要 service token（G1）。
+# 不设 secret 时只在回环（或声明 AUTH_INSECURE_EXPOSURE=loopback-published）可起。
 STRATEGY_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/tellurion?sslmode=disable' \
+JWT_SECRET='<shared-secret>' \
   go run ./cmd/assetservice
+# 探针：GET /healthz（进程活着）· GET /readyz（PG 可连 + 迁移已执行）
 
 # 或容器（单仓 compose；PG 默认 host.docker.internal:5432）
 docker compose -f deploy/compose.yaml up --build

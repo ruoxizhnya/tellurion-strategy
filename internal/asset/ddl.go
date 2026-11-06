@@ -100,4 +100,16 @@ var migrationStatements = []string{
 	// 不动上面已落地的建表语句；file 级 error 仍是人读文案。
 	`ALTER TABLE strategy.strategy_build_jobs
 		ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT ''`,
+
+	// SVC-STRAT-G1：promote 审计（人 / 时间 / 结论）。append-only，不设外键
+	// ——策略被删也不能连带抹掉「谁在什么时候批过」。
+	`CREATE TABLE IF NOT EXISTS strategy.strategy_promotions (
+		id            BIGSERIAL PRIMARY KEY,
+		strategy_id   TEXT NOT NULL,
+		version_hash  CHAR(64) NOT NULL,
+		artifact_hash CHAR(64) NOT NULL,
+		actor         TEXT NOT NULL CHECK (actor <> ''),
+		outcome       TEXT NOT NULL CHECK (outcome <> ''),
+		decided_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
 }

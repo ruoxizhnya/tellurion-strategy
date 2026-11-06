@@ -12,6 +12,7 @@ import (
 	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
+	"github.com/ruoxizhnya/tellurion-kit/auth"
 
 	"tellurion-strategy/internal/asset"
 	"tellurion-strategy/internal/httpapi"
@@ -98,7 +99,9 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("asset.New: %v", err)
 	}
-	api, err := httpapi.New(svc)
+	// G1：内部回写端点受鉴权闸保护；无 secret 的 TokenService = 开放访问。
+	api, err := httpapi.New(svc,
+		httpapi.WithAuthorizer(httpapi.NewAuthorizer(auth.NewTokenService(auth.Config{}))))
 	if err != nil {
 		t.Fatalf("httpapi.New: %v", err)
 	}

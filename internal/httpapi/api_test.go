@@ -15,6 +15,7 @@ import (
 	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
+	"github.com/ruoxizhnya/tellurion-kit/auth"
 
 	"tellurion-strategy/internal/asset"
 )
@@ -105,7 +106,11 @@ func newServer(t *testing.T, compiler asset.Compiler) (*httptest.Server, *asset.
 	if err != nil {
 		t.Fatalf("asset.New: %v", err)
 	}
-	api, err := New(svc)
+	// 无 secret 的 TokenService = 开放访问；受保护路由仍要经过闸（G1）。
+	api, err := New(svc,
+		WithAuthorizer(NewAuthorizer(auth.NewTokenService(auth.Config{}))),
+		WithPromotionLog(asset.NewMemoryPromotionLog()),
+	)
 	if err != nil {
 		t.Fatalf("httpapi.New: %v", err)
 	}
@@ -335,7 +340,8 @@ func TestAPI_WasmLifecycle(t *testing.T) {
 	if got := decodeObject(t, resp.Body)["status"]; got != "validated" {
 		t.Fatalf("validate status = %v", got)
 	}
-	resp = call(t, srv, http.MethodPost, "/api/strategies/"+id+"/versions/"+version+"/promote", nil, nil)
+	resp = call(t, srv, http.MethodPost, "/api/strategies/"+id+"/versions/"+version+"/promote", nil,
+		map[string]string{"X-Actor": "alice"})
 	wantStatus(t, resp, http.StatusOK)
 	if got := decodeObject(t, resp.Body)["status"]; got != "promoted" {
 		t.Fatalf("promote status = %v", got)
@@ -476,7 +482,7 @@ func TestAPI_RegisterArtifact(t *testing.T) {
 		t.Fatalf("validate picked toolchain %v", got)
 	}
 	resp = call(t, srv, http.MethodPost, "/api/strategies/"+id+"/versions/"+version+"/promote",
-		map[string]string{"toolchain": "tc-a"}, nil)
+		map[string]string{"toolchain": "tc-a"}, map[string]string{"X-Actor": "alice"})
 	wantStatus(t, resp, http.StatusOK)
 	resp = call(t, srv, http.MethodGet, "/api/strategies/"+id+"/resolve", nil, nil)
 	wantStatus(t, resp, http.StatusOK)
@@ -605,7 +611,12 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			wantErrorCode(t, call(t, srv, tc.method, tc.path, tc.body, nil), tc.status, tc.code)
+			// promote 的审批人来自受信头（G1）；其余端点不需要。
+			var headers map[string]string
+			if strings.HasSuffix(tc.path, "/promote") {
+				headers = map[string]string{"X-Actor": "alice"}
+			}
+			wantErrorCode(t, call(t, srv, tc.method, tc.path, tc.body, headers), tc.status, tc.code)
 		})
 	}
 

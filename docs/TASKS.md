@@ -305,7 +305,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > 模板：`tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1。
 > ~~模板见 `target-module-topology.md` UnifiedDataPoint 节~~ —— 那是**幻影节名**（core 全文 grep `UnifiedDataPoint` 在该文件 0 命中），2026-10-22 改指 §4.1。正文以彼处为准，此处只留指针、不镜像。
 
-### SVC-STRAT-G1 · 服务就绪门 G1：鉴权 · 公开健康端点 · 错误模型 · 版本化（ADR-036）[P0] ⬜
+### SVC-STRAT-G1 · 服务就绪门 G1：鉴权 · 公开健康端点 · 错误模型 · 版本化（ADR-036）[P0] 🔶（2026-11-07 施工；PG 腿未执行）
 
 - **① 目标**：本仓 10+2 条端点满足 ADR-036 §3 的 G1——版本化 API、错误模型、鉴权/授权、幂等、分页/限流——其中**鉴权是已知缺口，不是新需求**。
 - **② 上下文**：`internal/httpapi/api.go:46` 的 `POST /api/strategies/{id}/versions/{hash}/promote` 今天**无鉴权、无审计**（本仓 G0 与 G3 两条单的「如实登记」都点名过它：「promote 鉴权缺口未修——属 G3 / QT-32 闸门，不能在本轮自行引入 kit」）；`go.mod` **未引入 kit**（实测直接依赖 = contracts `v0.5.0` + pgx `v5.7.3` + testify）；公开 `/healthz` 未落（G0 因此只能用 TCP 探针）；`/readyz` 全 workspace 0 命中。**已裁的姿势**：第三轮裁决 ⑫「promote 审批人 = 面 B1」——core 作唯一对外入口（JWT `sub` → 受信 `X-Actor` + service token），本仓**只对 `/promote` + 两条 `/internal/*`** 引 kit `auth/httpadapter`，`X-Actor` 缺失 400 `actor_required`，promote 落审计（人/时间/结论），其余 9 条靠端口隔离并在 `api-schema.md` 写明。
@@ -313,6 +313,52 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 - **④ 约束与非目标**：不做全站鉴权（按裁决 ⑫ 只三条，其余靠端口隔离）；不接 core 侧客户端（属 `SVC-STRAT-G3`）；不把编译器与资产服务合进程；不引入 K8s；不改 `internal/asset` 的资产/编译业务逻辑；不动 contracts pin（`v0.5.0` → 升 `v0.6.0` 若需要，走单独一笔并核 `StrategyRef` 等已用符号）。
 - **⑤ 验收**：① 三条档位用例：无 token → 401/403、`role=service` → 放行三条、放行其余 9 条中的任一条即红（证明档位真的是白名单）；② `X-Actor` 缺失 → 400 `actor_required` 且**不写审计行**；③ `/healthz` 200 无鉴权、`/readyz` 无 PG → 503（两条各一条用例）；④ `api-schema.md` 每条端点有版本 + 错误码，哨兵表与实现逐条对得上；⑤ 三条命令单仓绿。
 - **⑥ 边界**：本仓接口与鉴权；core 的 resolve/promote 客户端与 `strategies` 表停写归 `SVC-STRAT-G3` + `tellurion:SVC-CORE-STRAT-RETIRE`。
+
+> **施工记录（2026-11-07）**：
+>
+> **落点（代码）**：`internal/httpapi/policy.go`（策略表三条，只认 `service`）、`auth.go`（`NewAuthorizer` /
+> `requireAuth`：鉴权先于限流；未装配闸 → 503）、`limit.go`（按身份令牌桶 50 rps / 突发 200）、
+> `api.go`（公开 `/healthz` `/readyz`；promote 校验受信 `X-Actor` 并落审计；版本列表 `limit`/`offset`；
+> 新增 `unauthenticated` / `forbidden` / `actor_required` / `rate_limited` / `auth_unavailable` / `audit_failed`
+> 六个 wire code）、`internal/asset/promotions.go`（`PromotionEvent` / `PromotionLog` + Memory/PG 实现 + `PG.Ready`）、
+> `internal/asset/ddl.go`（新增 `strategy.strategy_promotions`：append-only、无外键）、
+> `internal/asset/store.go` + `pgstore.go`（`ActiveJob`）、`internal/asset/service.go`（`SubmitBuild` 幂等键早退）、
+> `cmd/assetservice/main.go`（`-jwt-secret` / `JWT_SECRET` + 启动闸 `DecideStartup`；装配鉴权 / 审计 / 就绪）。
+>
+> **与 ④ 的偏差（如实登记）**：③-⑦ 的 build 幂等键落到了 `internal/asset.Service.SubmitBuild` + `Store.ActiveJob`，
+> 属于 ④ 点名的 `internal/asset` 面；改动只加「同键 `queued`/`running` 作业复用」，未碰 Verify / 状态机 /
+> 编译语义。若主任认为 ⑦ 只该成文、不该落码，回退 `ActiveJob` 与那段早退即可（对应用例
+> `TestSubmitBuildIsIdempotentWhileActive` 一并删）。
+>
+> **验收（真实退出码）**：`gofmt -l .` → 空；`go build ./...` → exit 0；`go vet ./...` → exit 0；
+> `go test ./... -count=1` → exit 0（8 包）。
+>
+> **破坏验证（真做真还原，每条先红后绿）**：
+> 1. 从 `policy.go` 删掉 promote 策略条目 → `TestServedPolicyIsServiceOnly` + `TestProtectedRoutesAcceptServiceToken` 红
+>    （promote 被 403）；还原后绿。
+> 2. 把 promote 的「`X-Actor` 缺失即 400」改成兜底 `unknown` → `TestPromoteRequiresActorAndWritesAudit` 红
+>    （期望 400 / 0 行，实得 200 / 1 行）；还原后绿。
+> 3. 删掉 `SubmitBuild` 的 `ActiveJob` 早退 → `TestSubmitBuildIsIdempotentWhileActive` 红
+>    （第二次 `job_id` 不同 / 编译器被调 2 次）；还原后绿。
+>
+> **未执行（🔶 的原因，不是已完成）**：
+> - **真 PG 腿全部未执行**（Docker 引擎不可用）：`PG.Ready`（ping + 六张表是否存在）、`PG.RecordPromotion` 的 INSERT、
+>   `PG.ActiveJob` 的 SQL、`strategy_promotions` 在既有库上的可重入迁移——只用 Memory 实现、静态编译与 `go vet` 验证过，
+>   **没有连过真库**。
+> - **真 service token 端到端 promote 未执行**：token 签发分发属 `QT-76`（core），本仓只能用 kit 在测试里自签。
+> - 未跑 `docker compose -f deploy/compose.yaml config`（compose 已改，加 `JWT_SECRET` / `AUTH_INSECURE_EXPOSURE`），
+>   按硬约束记「未执行」。
+>
+> **顺带逮到的文档-实现不符（按实现订正，未改代码）**：`api-schema.md` §3 旧句「promote / deprecate 幂等
+> （重复调用结果一致）」与状态机不符——重复 promote / deprecate 都返回 409 `invalid_transition`；已在 §3 改写并注明。
+> 要改成真幂等属资产状态机变更，建议另立单（G4 / QT-41 余项）。
+>
+> **已知上界**：build 幂等键是「先查后写」，并发窗口内两次提交仍可能各排一份；未加唯一索引
+> （加索引会改变 `strategy_build_jobs` 写入语义，留给 G2「唯一 writer + 可重放迁移」一并做）。
+>
+> **文档**：`api-schema.md`（§1 探针/鉴权/限流、§2 码表 + §2.1 哨兵闭合表、§3 幂等订正、§4.1 版本化、
+> §4.2 分页、§7 逐端点版本 + 错误码）、`db-schema.md`（新表 + 约束 + 迁移）、`ARCHITECTURE.md`（分层/包布局/入口）、
+> `AGENTS.md`（§1 状态 + §4 kit `v0.1.4` 登记）、`README.md` 与 `deploy/compose.yaml`（启动变量）。
 
 ### SVC-STRAT-G2 · 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ⬜
 

@@ -12,11 +12,15 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ruoxizhnya/tellurion-kit/auth"
+	kithttp "github.com/ruoxizhnya/tellurion-kit/auth/httpadapter"
 
 	"tellurion-strategy/internal/asset"
 	"tellurion-strategy/internal/httpapi"
@@ -63,19 +67,39 @@ func run() error {
 	var compilerEnv repeatableFlag
 	flag.Var(&compilerArgs, "compiler-arg", "toolchain argument template passed to cmd/compiler (repeatable)")
 	flag.Var(&compilerEnv, "compiler-env", "environment variable passed through to the external toolchain (repeatable)")
+
+	// 鉴权（SVC-STRAT-G1）：只有 /promote 与两条 /internal/* 受保护。无 secret
+	// 时退到开放访问——启动闸保证它只可能发生在回环或显式 loopback-published。
+	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"),
+		"JWT secret shared with core (empty = open access on loopback only)")
+	exposure := flag.String("insecure-exposure", os.Getenv("AUTH_INSECURE_EXPOSURE"),
+		"explicit exposure declaration for open access on a non-loopback bind (only loopback-published is accepted)")
 	flag.Parse()
+
+	startup := kithttp.DecideStartup(*jwtSecret, true, bindHost(*addr), *exposure)
+	if startup.Refuse {
+		return errors.New(startup.Reason)
+	}
+	if startup.Insecure {
+		slog.Warn("authentication disabled (open access); bind address must be loopback or loopback-published",
+			"addr", *addr)
+	}
+	tokens := auth.NewTokenService(auth.Config{JWTSecret: startup.Secret})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	var (
-		store   asset.Store
-		storage string
-		closeDB func()
+		store        asset.Store
+		storage      string
+		closeDB      func()
+		readiness    func(context.Context) error
+		promotionLog asset.PromotionLog
 	)
 	if *dsn == "" {
 		store = asset.NewMemory()
 		storage = "memory (non-persistent)"
+		promotionLog = asset.NewMemoryPromotionLog()
 		slog.Warn("STRATEGY_DATABASE_URL is empty; using the in-memory store")
 	} else {
 		pg, err := asset.OpenPG(ctx, *dsn)
@@ -89,6 +113,8 @@ func run() error {
 		store = pg
 		storage = "postgres"
 		closeDB = pg.Close
+		readiness = pg.Ready
+		promotionLog = pg
 	}
 	if closeDB != nil {
 		defer closeDB()
@@ -134,7 +160,11 @@ func run() error {
 		return fmt.Errorf("register builtins: %w", err)
 	}
 	slog.Info("builtin strategies registered", "count", registered)
-	api, err := httpapi.New(svc)
+	api, err := httpapi.New(svc,
+		httpapi.WithAuthorizer(httpapi.NewAuthorizer(tokens)),
+		httpapi.WithReadiness(readiness),
+		httpapi.WithPromotionLog(promotionLog),
+	)
 	if err != nil {
 		return err
 	}
@@ -148,11 +178,30 @@ func run() error {
 		logMode = "external (cmd/compiler)"
 	}
 	slog.Info("strategy asset service listening", "addr", *addr,
-		"storage", storage, "compiler", logMode)
+		"storage", storage, "compiler", logMode, "auth", tokens.Enabled())
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// bindHost 从 -addr 取绑定主机；取不到端口时原样当主机比（空 = 全网卡）。
+func bindHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
+}
+
+// envFirst 按顺序取第一个非空环境变量（core 历史用法 JWT_SECRET、配置口径 AUTH_JWT_SECRET）。
+func envFirst(names ...string) string {
+	for _, name := range names {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // defaultCacheDir 给磁盘二级缓存一个跨重启稳定的位置；拿不到用户缓存目录时

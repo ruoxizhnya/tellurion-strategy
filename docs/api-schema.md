@@ -13,6 +13,10 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 > **QT-41c（2026-10-25）**：`cmd/assetservice` 用 `-compiler-bin` 装配外部编译进程——build 端点落 queued 行后
 > 经 `internal/compilerclient` 派发 `cmd/compiler`，编译进程经内部端点回写 `running` / 终态；
 > `-compiler-bin` 为空则不装配，build 端点仍 fail-closed 503 `compile_unavailable`。
+> **SVC-STRAT-G1（2026-11-07）**：引 `tellurion-kit v0.1.4`，`/promote` + 两条 `/internal/*` 挂鉴权闸
+> （`policy.go`，只认 `service` 角色）；promote 要求受信 `X-Actor` 并落 `strategy.strategy_promotions` 审计；
+> 新增公开 `/healthz` 与 `/readyz`；按身份令牌桶限流（50 rps / 突发 200）；版本列表支持 `limit` / `offset`；
+> build 幂等键落实现。错误码闭合表见 §2.1，逐端点版本与错误码见 §7。
 > **剩余未落项**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义单独立文、core 侧 Mount 门。
 > 逐条登记在 `docs/TASKS.md` QT-41/41b/41c 的施工记录里。
 > `version_hash` 的输入形状与域标签已收编 contracts `v0.5.0`（G5 ③，2026-10-24）：`PUT .../source` 的 wire 形状与 hash 值不变。
@@ -51,6 +55,37 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 > `ref` 三形态：空 / `latest` → definition 的 active；64 位小写 hex → 先按 `artifact_hash` 查、查不到再按
 > `version_hash` 解析到该版本当前 promoted 的 artifact（**回写实际 `artifact_hash`**）；`id@hash` → id 必须与路径一致。
 
+### 探针（公开、无鉴权、不限流）
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/healthz` | 进程活着 → 200 `{"status":"ok"}`；不查库 |
+| GET | `/readyz` | 就绪 → 200 `{"status":"ready","store":"postgres"}`；PG 池不可连 / 迁移未执行 / 无 PG → 503 `{"status":"not_ready",...}` |
+
+> 两条探针**刻意不鉴权、不限流**：被限流会被编排层读成未登录/坏实例（core 侧 AUD-57 的同型坑）。
+> `/healthz` 只回答「进程活着」，库挂了它仍然 200——编排层要用 `/readyz` 做流量准入。
+
+### 鉴权与限流（G1）
+
+**只有三条端点挂鉴权闸**（`internal/httpapi/policy.go`，裁决 ⑫）：
+
+| 方法 | 路径 | 允许角色 |
+|---|---|---|
+| POST | `/api/strategies/{id}/versions/{hash}/promote` | `service` |
+| POST | `/internal/strategies/{id}/artifacts` | `service` |
+| POST | `/internal/strategies/{id}/builds/{job_id}` | `service` |
+
+- 凭证：`Authorization: Bearer <access token>`（service token = kit `IssueServiceToken`，`role=service`）。
+  无 token / 坏 token / 用 refresh token → 401 `unauthenticated`；角色不对 → 403 `forbidden`。
+- 其余 9 条公开端点**不挂鉴权**，靠端口隔离（默认 `127.0.0.1:8090`，只在集群内/回环）。
+  启动闸（kit `DecideStartup`）：无 `JWT_SECRET` 且绑定非回环、又未声明 `AUTH_INSECURE_EXPOSURE=loopback-published`
+  ⇒ **拒绝启动**，不会出现「漏配 secret 就全开」的进程。
+- 限流：进程内按身份分桶（令牌桶 50 rps / 突发 200；未鉴权端点共用一个 `open-access` 桶）。
+  超限 → 429 `rate_limited` + `Retry-After: 1`。**鉴权先于限流**：401 / 403 不会被 429 顶替。
+- promote 额外要求受信头 `X-Actor`（core 鉴权后从 JWT `sub` 转发）：缺失 → 400 `actor_required`，
+  且**不写审计行**。成功 promote 追加一行 `strategy.strategy_promotions`（actor / decided_at / outcome）。
+  审计写失败 → 500 `audit_failed`（promote 可能已生效，重试安全，但不会静默丢审计）。
+
 ### 内部面（编译服务专用，不经公网暴露）
 
 | 方法 | 路径 | 用途 |
@@ -73,6 +108,12 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 
 | 情况 | 返回 | 调用方行为 |
 |---|---|---|
+| 受保护路由无 token / 坏 token / refresh token | 401 + `unauthenticated` | 换 access token 重试 |
+| 受保护路由角色不是 `service` | 403 + `forbidden` | 拒绝（不是权限不足的模糊化，本仓只有一档） |
+| promote 缺 `X-Actor`（受信头） | 400 + `actor_required` | 由 core 补可信身份后重试；本仓不猜审批人 |
+| promote 审计写失败 | 500 + `audit_failed` | 查库确认 promote 是否已生效；重试只会得到 409，**不会补写审计** |
+| 超过令牌桶 | 429 + `rate_limited`（带 `Retry-After`） | 按 `Retry-After` 退避 |
+| 受保护路由未装配鉴权闸 | 503 + `auth_unavailable` | 部署缺陷，拒绝流量 |
 | 策略不存在 | 404 + `strategy_not_found` | 拒绝 |
 | 版本不存在 | 404 + `version_not_found` | 拒绝（**不回退 latest**） |
 | 无 active 版本 | 404 + `no_active_version` | fail-closed 拒绝跑 |
@@ -105,11 +146,48 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 > 上表 wire code 与 HTTP 状态不变。跨仓消费方（agent 生成闭环 / core 取 artifact / 编排终态）按契约哨兵 `errors.Is`
 > 判定，不必 import 本仓实现包；判定语义是 `%w` 保链，`err.Error()` 的措辞不属于契约。
 
+### 2.1 哨兵闭合表（`internal/asset/errors.go` → HTTP，G1 ④）
+
+> 每个哨兵都要有**确定的** HTTP 码。落在「其它」不算闭合——本表是 `classify()` 的逐条镜像，
+> 新增哨兵不加表 = 缺陷；未在表内的哨兵只允许走 500 `internal`（且必须是真正的服务端故障）。
+
+| 哨兵（`asset.`） | HTTP | wire code |
+|---|---|---|
+| `ErrStrategyNotFound` | 404 | `strategy_not_found` |
+| `ErrVersionNotFound` | 404 | `version_not_found` |
+| `ErrNoActiveVersion` | 404 | `no_active_version` |
+| `ErrArtifactNotFound` / `ErrJobNotFound` | 404 | `artifact_not_found` / `job_not_found` |
+| `ErrStrategyExists` | 409 | `strategy_exists` |
+| `ErrArtifactConflict` | 409 | `conflict` |
+| `ErrAmbiguousArtifact` | 409 | `ambiguous_artifact` |
+| `ErrInvalidTransition` | 409 | `invalid_transition` |
+| `ErrInvalidArtifact` / `ErrArtifactHashMismatch` | 409 | `artifact_invalid` |
+| `contracts.ErrImportNotWhitelisted` | 409 | `imports_not_allowed` |
+| `ErrStorageUnsupported` | 409 | `storage_unsupported` |
+| `ErrCompileFailed`（contracts 别名） | 409 | `compile_failed` |
+| `ErrCompileUnavailable`（contracts 别名） | 503 | `compile_unavailable` |
+| `ErrSourceTooLarge` / `ErrArtifactTooLarge`（contracts 别名） | 413 | `payload_too_large` |
+| `ErrUnsupportedCarrier` | 400 | `unsupported_carrier` |
+| `ErrInvalidABIVersion` | 400 | `invalid_abi_version` |
+| `ErrInvalidScope` | 400 | `invalid_scope` |
+| `ErrSourceMissing` | 400 | `source_required` |
+| `ErrUnsupportedToolchain` | 400 | `unsupported_toolchain` |
+| `ErrInvalidParameter` / `ErrInvalidDefinition` | 400 | `invalid_request` |
+| `ErrArtifactFetchFailed` | 500 | `internal`（真正的取字节故障，不吐内部原文） |
+
+> `contracts.ErrAbiVersionMismatch` **不在本服务的出口表里**：本仓不判定内核能力集，只在解析
+> `abi_version` 时用 `ErrInvalidABIVersion`（400）。跨仓消费方按契约哨兵 `errors.Is` 判定的语义不变。
+
 ## 3. 幂等性与重试
 
 - `version_hash` / `artifact_hash` 内容寻址 → 重复上传同源码是幂等（同 hash 不新增行）。
-- `build` 是异步 job：同 `(id, version_hash, toolchain)` 重复提交应复用已有 artifact。
-- `promote` / `deprecate` 幂等（重复调用结果一致）。
+- `build` 幂等键 = `(strategy_id, version_hash, toolchain)`（G1 ⑦）：同键已有 `queued` / `running` 作业时
+  **复用同一个 `job_id`**，不排第二份；终态（`succeeded` / `failed`）不复用——重新提交会排新作业。
+  已知上界：查重与落库不是同一事务，并发窗口内两次提交仍可能各排一份（未做唯一索引，登记在
+  `docs/TASKS.md` SVC-STRAT-G1 施工记录）。
+- `promote` / `deprecate` **不是幂等成功**：`promote` 要求 artifact 处于 `validated`、`deprecate` 要求
+  `promoted`，重复调用返回 409 `invalid_transition`（实现如此；本文件旧句「重复调用结果一致」与代码不符，
+  SVC-STRAT-G1 按实现订正）。
 - `resolve?ref=hash` 无副作用，可任意重试。
 
 ## 4. 版本与兼容
@@ -122,6 +200,26 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 - 端点废弃走 `deprecated` 头 + 一个 MINOR 周期。
 - ⚠️ **semver 与 hash 是两套东西**：`strategy_ref` / `artifact_hash` / `version_hash` / `run_spec_hash` 自带版本语义（同 hash = 同内容），**不参与 semver**，也不因它们变化而 bump 版本号；
   本仓的 HTTP 面随 `tellurion-contracts` 的版本纪律走（口径源头 `tellurion:docs/TASKS.md` QT-19 ③，落地形态 `tellurion-contracts:README.md`）。
+
+### 4.1 版本化与兼容（G1 ⑤）
+
+- **URL 不带版本号**：`/api/strategies...` 与 `/internal/strategies...` 是冻结前缀，**不存在** `/v2` 并行面。
+  版本身份由「本仓 tag + 依赖的 contracts 版本」共同钉住（今天 contracts `v0.5.0` / kit `v0.1.4`）。
+- **加字段 = MINOR**：新增响应字段、新增可选请求字段、新增 wire code、新增端点，都是兼容变更。
+  调用方必须忽略未知字段（本仓的解码器也是 `DisallowUnknownFields`，所以**请求侧加字段对旧服务是硬失败**——
+  加请求字段必须在同一次发布里让服务先能接收）。
+- **改语义 = MAJOR**：改变既有字段的含义、把可选改必填、把 200 改成别的成功码、改变状态机跃迁、改变错误码归属。
+- **删端点 / 删字段**：标 `Deprecated` 响应头，保留**一个 MINOR 周期**再删。
+- **hash 不参与 semver**：`version_hash` / `artifact_hash` 变化不代表服务版本变化；反过来，服务 MAJOR 也不代表
+  历史 artifact 失效——artifact 永不失效（见 §4 第一条）。
+
+### 4.2 分页（G1 ⑥）
+
+- 唯一列表端点 `GET /api/strategies/{id}/versions` 支持 `?limit=&offset=`：
+  `limit` 默认 **200**、上界 **1000**（`1..1000`），`offset` 默认 0、必须 `>= 0`；非法值 → 400 `invalid_request`。
+- 响应仍是**裸数组**（不是 `{items,total}`）：`offset` 超过末尾返回 `[]`，不报错。
+  排序是服务端稳定序（版本创建时间升序，同时间按 hash），调用方不要依赖「第 N 页」语义做增量同步。
+- 其余端点没有列表语义（resolve / artifact / job 都是单条），不分页。
 
 ## 5. 不提供什么（边界）
 
@@ -202,3 +300,30 @@ QT-41b ③-⑤ 那句「Resolve/Fetch/Verify/Mount 分界」漏了 Compile 且�
 - **M5 ✅ 已结案**：`tellurion:docs/design/qt-decoupling/repo-inventory.md` §1.2 —— `strategy` 在 ADR-027 §2.6.4 的服务拓扑里**有位子**（六仓里只有 data / strategy 有），容器升格仍需一条 ADR。
 - **唯一硬前置：QT-05（S1 契约层落码）**。contracts 仓今天**零符号**，而本仓 module path 是单段短名 + 禁止 `replace ../` ⇒ **拿不到协议类型就无法写任何 handler**。跳序的代价已在本表两处显形：错误语义（6.3/偏差 #5）与 wire code（偏差 #6）都必须先在 contracts 定形，本仓才能落实现。
 - 因此两张单的状态**保持 ⬜ 未开工**，但前置从「两项 + 一堆假设」收敛为「只剩 QT-05」；上面七条偏差是 QT-41 动手第一天的输入，不是可以留到实现期再说的小事。
+
+## 7. 逐端点版本与错误码（G1，闭合表）
+
+> 版本口径见 §4.1：**全部端点的 wire 版本都是 `v1`**（前缀冻结、路径不带版本号），
+> 表格里的「v1」不是另一个并行面，而是「本表描述的这套语义」。错误码只列**该端点自身会产生的**；
+> 429 `rate_limited` 对所有非探针端点都成立，为可读性在表尾统一说明，不在每行重复。
+
+| # | 端点 | 版本 | 该端点的错误码（除 429 / 500 外） |
+|---|---|---|---|
+| 1 | `POST /api/strategies` | v1 | 400 `invalid_request` / `unsupported_carrier` / `invalid_abi_version` / `invalid_scope`；409 `strategy_exists` |
+| 2 | `PUT /api/strategies/{id}/source` | v1 | 400 `invalid_request` / `source_required`；404 `strategy_not_found`；409 `storage_unsupported`；413 `payload_too_large` |
+| 3 | `POST /api/strategies/{id}/build` | v1 | 400 `invalid_request` / `unsupported_carrier` / `unsupported_toolchain`；404 `version_not_found`；503 `compile_unavailable` |
+| 4 | `POST /api/strategies/{id}/versions/{hash}/validate` | v1 | 400 `invalid_request` / `unsupported_toolchain`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `artifact_invalid` / `imports_not_allowed` |
+| 5 | `POST /api/strategies/{id}/versions/{hash}/promote` | v1 | 400 `invalid_request` / `actor_required`；401 `unauthenticated`；403 `forbidden`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `artifact_invalid` / `imports_not_allowed` / `invalid_transition`；500 `audit_failed`；503 `auth_unavailable` |
+| 6 | `POST /api/strategies/{id}/versions/{hash}/deprecate` | v1 | 400 `invalid_request`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `invalid_transition` |
+| 7 | `GET /api/strategies/{id}/versions` | v1 | 400 `invalid_request`（分页参数）；404 `strategy_not_found` |
+| 8 | `GET /api/strategies/{id}/builds/{job_id}` | v1 | 404 `job_not_found` |
+| 9 | `GET /api/strategies/{id}/resolve` | v1 | 400 `invalid_request`（坏 ref）；404 `strategy_not_found` / `version_not_found` / `no_active_version` / `artifact_not_found` |
+| 10 | `GET /api/strategies/{id}/versions/{hash}/artifact` | v1 | 400 `invalid_request`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `storage_unsupported` |
+| 11 | `POST /internal/strategies/{id}/artifacts` | v1 | 400 `invalid_request`；401 `unauthenticated`；403 `forbidden`；404 `strategy_not_found` / `version_not_found`；409 `conflict` / `artifact_invalid` / `imports_not_allowed`；413 `payload_too_large`；503 `auth_unavailable` |
+| 12 | `POST /internal/strategies/{id}/builds/{job_id}` | v1 | 400 `invalid_request`；401 `unauthenticated`；403 `forbidden`；404 `job_not_found`；409 `invalid_transition` / `artifact_invalid`；503 `auth_unavailable` |
+| 13 | `GET /healthz` | v1 | 仅 200（探针不限流） |
+| 14 | `GET /readyz` | v1 | 503（`status=not_ready`，探针不限流；不是 wire code） |
+
+- **429 `rate_limited`**：1–12 全部适用（按身份令牌桶，超限带 `Retry-After`）。探针 13–14 豁免。
+- **500 `internal`**：所有端点的兜底，只用于真正的服务端故障；promote 的审计故障用更精确的 `audit_failed`。
+- **401 / 403 / 503 `auth_unavailable`**：只出现在受保护的三条（5、11、12）。

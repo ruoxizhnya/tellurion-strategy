@@ -235,6 +235,15 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 			ErrUnsupportedToolchain, toolchain, s.compiler.ToolchainID())
 	}
 
+	// 幂等键（G1 ⑦）：同一 (strategy, version, toolchain) 已有 queued / running
+	// 作业时复用，不再排第二份。终态不复用——「重编」要么来自新版本、新工具链，
+	// 要么由运维显式处理（见 docs/api-schema.md §3）。
+	if active, ok, err := s.store.ActiveJob(ctx, id, versionHash, s.compiler.ToolchainID()); err != nil {
+		return BuildJob{}, err
+	} else if ok {
+		return active, nil
+	}
+
 	job := BuildJob{
 		ID:          s.idGen(),
 		StrategyID:  id,

@@ -13,6 +13,10 @@
 `POST .../build` → `internal/compilerclient` 派发 `cmd/compiler` → 内部端点回写 `queued → running → succeeded | failed`
 （失败带 `error_code`）；`-compiler-bin` 为空时 build 端点仍 fail-closed 503 `compile_unavailable`。
 余项见 `docs/TASKS.md`（`storage=url` 非目标、`version_hash` 域标签已随 contracts `v0.5.0` 收编）。
+**SVC-STRAT-G1（2026-11-07）**：引 `tellurion-kit v0.1.4`——`/promote` + 两条 `/internal/*` 挂 service-token
+闸（`internal/httpapi/policy.go`，只认 `service`）；promote 要求 `X-Actor` 并落 `strategy.strategy_promotions`
+审计；新增公开 `/healthz` / `/readyz`；按身份令牌桶限流（探针豁免，鉴权先于限流）；版本列表分页；
+build 幂等键（同 `(strategy, version, toolchain)` 未终态作业复用 `job_id`）。
 
 **今天的实现**：`core:pkg/strategy`（运行时 + 插件 + `SignalProvider`）+ `strategies` 表（定义）。本仓只收"资产"这一半，**运行时留在 core**。
 
@@ -57,7 +61,7 @@ go test ./...
 |---|---|---|
 | `github.com/ruoxizhnya/tellurion-contracts` | `v0.5.0`（2026-10-24 发版，非伪版本；G4 切 pin） | 实际使用 `engine` 子包（package 名仍是 `contracts`）：`StrategyRef` / `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵 / **编译·资产四哨兵**（`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`，本仓以同名别名消费，见 `internal/asset/errors.go`）；QT-22 起消费 `StrategyVersionInput` / `DomainStrategyVersionHash`（G5 ③ 已收编：`internal/asset/hash.go` 无本地定义，编码委托 `StrategyVersionInput.Hash()`；域字符串逐字节未变） |
 | `github.com/jackc/pgx/v5` | `v5.7.3` | **生产 PG `Store`**（`internal/asset/pgstore.go`）与连接池；版本与 core / kit / data 仓一致。仅存储层使用，不把 `pgx` 类型泄进领域模型 |
-| `github.com/ruoxizhnya/tellurion-kit` | **未引入** | 日志 / HTTP / 存储连接。当前实现用标准库；引入前先登记到本表 |
+| `github.com/ruoxizhnya/tellurion-kit` | `v0.1.4`（2026-11-07 引入，G1） | `auth` + `auth/httpadapter`：service-token 校验、角色 any-of、`RouteKey`、启动闸 `DecideStartup`。只在 `internal/httpapi` 与 `cmd/assetservice` 使用，不把 kit 类型泄进 `internal/asset` 领域模型 |
 | `github.com/stretchr/testify` | `v1.11.1` | **仅测试**断言（与 contracts 仓同版本）；随 QT-41/41b 测试引入，2026-10-23 补登记 |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
