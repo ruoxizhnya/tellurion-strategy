@@ -360,14 +360,45 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > §4.2 分页、§7 逐端点版本 + 错误码）、`db-schema.md`（新表 + 约束 + 迁移）、`ARCHITECTURE.md`（分层/包布局/入口）、
 > `AGENTS.md`（§1 状态 + §4 kit `v0.1.4` 登记）、`README.md` 与 `deploy/compose.yaml`（启动变量）。
 
-### SVC-STRAT-G2 · 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ⬜
+### SVC-STRAT-G2 · 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036）[P0] 🔶（2026-11-07 施工；真 PG 重放腿未执行）
 
-- **① 目标**：本仓五张 `strategy.*` 表的 DDL 归属可自证——迁移可重复执行、不跨 schema 写、每张表「谁写」有答案；同时把「core 的 `strategies` 表还在被谁写」这条**双 owner 事实**如实登记，不假装 G2 已过。
-- **② 上下文**：`internal/asset` 有 Memory + PG 两个 Store、启动迁移、两级缓存、14 个内置策略登记；本仓 `db-schema.md` 已声明五张表；但**定义的真相源今天仍在 core**（`quant.strategies` + core 本地注册表，实测 core 侧写点见 `tellurion:pkg/storage/strategies.go` 的 5 个方法 + `cmd/analysis/setup.go:336` 的 `SeedStrategies`），ADR-036 §5.2 明写双 owner 是**迁移中的临时状态**，G2 的验收是「它的表只有它写」⇒ **本仓 G2 在 core 停写前不可能 ✅**，本单交付的是「本仓这一半的自证 + 缺口登记」。跨仓待核 K5（软删/版本语义对齐）未答。
+- **① 目标**：本仓六张 `strategy.*` 表的 DDL 归属可自证——迁移可重复执行、不跨 schema 写、每张表「谁写」有答案；同时把「core 的 `strategies` 表还在被谁写」这条**双 owner 事实**如实登记，不假装 G2 已过。
+- **② 上下文**：`internal/asset` 有 Memory + PG 两个 Store、启动迁移、两级缓存、14 个内置策略登记；本仓 `db-schema.md` 已声明六张表（G1 新增 `strategy_promotions`）；但**定义的真相源今天仍在 core**（`quant.strategies` + core 本地注册表，实测 core 侧写点见 `tellurion:pkg/storage/strategies.go` 的 5 个方法 + `cmd/analysis/setup.go:336` 的 `SeedStrategies`），ADR-036 §5.2 明写双 owner 是**迁移中的临时状态**，G2 的验收是「它的表只有它写」⇒ **本仓 G2 在 core 停写前不可能 ✅**，本单交付的是「本仓这一半的自证 + 缺口登记」。跨仓待核 K5（软删/版本语义对齐）已在 `db-schema.md` §1.1 作答。
 - **③ 要求**：① 迁移重放自证：同一测试库连跑两次 DDL，行数 / `pg_indexes` / 列集指纹逐位不变（`STRATEGY_TEST_DSN` 腿，无库 skip）；② 禁跨 schema 写护栏：静态扫本仓 SQL，出现 `quant.` / `public.` / `market.` / `run.` 等非本仓 schema 的写语句即红；③ `strategy.strategy_definitions` 与 core `strategies` 的**软删语义与版本链对照表**（逐列：删除是 `deleted_at` 还是行消失、版本号从哪来、`version_hash` 怎么算），这是 K5 的答卷，也是 `SVC-CORE-STRAT-RETIRE` 的前置；④ 在 `db-schema.md` 里把「今天谁写」按列写实（双 owner 状态 + 指向 core 的具体行号），不许写成目标态。
-- **④ 约束与非目标**：不 `DROP` / 不搬迁任何表；不改 core 的 `strategies` 写点（那是 core 侧退役单，串行第 6）；不新建第六张表来「绕过」语义对齐；不在本单接 core 客户端。
+- **④ 约束与非目标**：不 `DROP` / 不搬迁任何表；不改 core 的 `strategies` 写点（那是 core 侧退役单，串行第 6）；不新建第七张表来「绕过」语义对齐（第六张 `strategy_promotions` 是 G1 的审计表，不是对齐用途）；不在本单接 core 客户端。
 - **⑤ 验收**：① 重放腿两次指纹逐位相同（贴输出）；② 破坏验证：往本仓 SQL 常量加一行 `UPDATE quant.strategies` ⇒ 护栏红，还原复绿；③ K5 对照表逐列有出处（`repo:path:line`），并能被 core 侧反查；④ `db-schema.md` 的「今天谁写」与 core 实测一致（抽 2 行核对）；⑤ 三条命令绿。
 - **⑥ 边界**：本仓 schema 自证 + K5 答卷；停写与删除归 `SVC-STRAT-G3` 与 `tellurion:SVC-CORE-STRAT-RETIRE`。
+
+> **施工记录（2026-11-07）**：
+>
+> **③-① 迁移重放自证（代码已落，腿未跑）**：`internal/asset/g2_pg_test.go` 的
+> `TestPGMigrationsAreReplayable`——同库连跑两次 `Migrate()`，比对列集（`information_schema.columns`）、
+> 索引集（`pg_indexes`）与六张表行数压成的 sha256。无 `STRATEGY_TEST_DSN` 时 skip。
+> **未执行**：本机 Docker 引擎不可用，**没有连过真 PG**；这条腿的输出（两次指纹逐位相同）**未取得**。
+>
+> **③-② 禁跨 schema 写护栏（已落）**：`internal/asset/g2_test.go` 的 `TestNoCrossSchemaWrites`
+> 静态扫全仓 `.go`，命中 `insert/update/delete/create table/create index/alter table/drop table/truncate table`
+> + 非 `strategy.` schema 即红；附 `TestStrategyWritesAreFullyQualified` 反向自证本仓写语句都带 `strategy.`。
+> **破坏验证（真做真还原）**：在 `internal/asset/promotions.go` 临时加一行
+> `UPDATE quant.strategies SET is_active = FALSE` → `TestNoCrossSchemaWrites` 红（报该文件与语句）；
+> 删掉该行后复绿（`go test ./internal/asset -run TestNoCrossSchemaWrites` exit 0）。
+>
+> **③-③ K5 对照表（已落）**：`db-schema.md` §1.1 逐列对照 core `strategies` 与本仓 `strategy_definitions`
+> （主键/名称/参数/类型/软删 vs 无删除/版本链/`version_hash`/内置 3 vs 14/今天谁写/时间戳），出处写到
+> `tellurion:pkg/storage/strategies.go:12,106,119`、`tellurion:docs/migrations/011_add_strategies_table.sql:4-14`、
+> `internal/asset/pgstore.go:57,393,420`、`internal/asset/ddl.go:27-45`。核心差异：core 删除 = `is_active=false`
+> 行仍在，本仓**无定义级删除**、下线是版本级 `deprecate`；core 无版本概念、参数原地 upsert，本仓是内容寻址版本链。
+>
+> **③-④ 「今天谁写」写实**：`db-schema.md` §1.1「写者（今天）」行 + 表下「双 owner 事实」说明，
+> 明确今天仍是 core 写 `quant.strategies`、本仓零写它；未写成目标态。
+>
+> **未执行（🔶 的原因）**：真 PG 重放腿（两次指纹）、以及「既有库上 `strategy_promotions` 可重入迁移」的实证。
+> 这两条都要 `STRATEGY_TEST_DSN` + Docker PG，本机不具备。
+>
+> **验收状态**：②③④ 已满足；①（重放输出）与「抽 2 行核对 core 实测」中的运行时部分记「未执行」；
+> 三条命令（gofmt/build/vet/test）绿。
+>
+> **文档**：`db-schema.md` §1（六张表）、§1.1（K5 对照表）、§3（新表约束）、§4（迁移清单）。
 
 ### SVC-STRAT-G4 · 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036）[P1] ⬜
 
