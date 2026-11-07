@@ -51,6 +51,9 @@ verified-by: QT-41c 落地——build 端点 → internal/compilerclient 派发 
    `runBuild`。`GET .../builds/{job_id}` 轮询：`queued → running → succeeded | failed`，终态带
    `artifact_hash`（成功）或 `error_code` + `error`（失败）。**未装配编译器**（`-compiler-bin` 为空）时
    build 端点仍 503 `compile_unavailable`，不落悬空作业。
+3a. `cmd/compiler` 子进程走 `exec.CommandContext`，存活上界 = min(批次预算, `-compiler-process-timeout`，默认 20m、
+   最大 1h)。到点杀进程并由 `compilerclient` 回写 `failed + error_code=compile_timeout`——**不许留在 running**；
+   回写本身失败则按第 6 类失败（回写失败）由 runbook 人工收口。七类失败语义见 `docs/api-schema.md` §2.2。
 3b. 独立编译进程：`cmd/compiler -job … [-job …]` → `compilerjob.Queue`（`-workers` 限并发、`-max-attempts` 重试）
    → 首次尝试前经内部端点上报 `running`，终态上报 `succeeded` / `failed`（带错误归因码）；同时经内部
    artifacts 端点登记 artifact。状态词表与 `strategy_build_jobs.state` 同一套；作业可带资产服务签发的
@@ -81,6 +84,8 @@ verified-by: QT-41c 落地——build 端点 → internal/compilerclient 派发 
 | 字节被篡改 | 跑错字节码 | 下载前 `ArtifactHash` 校验；`X-Artifact-Hash` 与 ETag 同源 |
 | 编译服务回填撒谎 | 登记错 artifact | 内部端点重算 sha256 + 重解析 imports，不符 409 `artifact_invalid` |
 | 编译失败 / 工具链抖动 | 单作业失败（坏 job 不带走整批） | `compilerjob.Queue` 按 `-max-attempts` 重试；确定性失败（形状 / 超限 / hash 不符 / 服务未配）立即终态不重试；终态 `failed` 带 `job_id` + `attempts` + `error` 可检索 |
+| 子进程挂死（锁 / 镜像 / 网络解析） | job 永远停在 `running`，调用方无限等 | `exec.CommandContext` + `-compiler-process-timeout`（默认 20m，最大 1h）杀进程 → 回写 `failed + compile_timeout`；回写失败按下一行处理 |
+| 回写面不可达（内部端点停机 / 鉴权坏） | 编译器已结束但 job 停在 `queued` / `running` | running 上报重试 3 次；终态上报失败只记日志；调用方按「进程上界 + 2min」停滞阈值判死，按 `docs/runbook.md` 人工收口为 `failed` |
 | 重试会拖长批次 | 排队作业相互等待 | `-workers` 控并发；批次 ctx 预算按 `ceil(N/workers) × maxAttempts × (timeout+backoff) + 1min` 计算，超时按失败收口 |
 
 ## 4. 不变量（可被测试钉住的）

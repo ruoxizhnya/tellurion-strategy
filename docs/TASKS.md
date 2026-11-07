@@ -400,7 +400,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 >
 > **文档**：`db-schema.md` §1（六张表）、§1.1（K5 对照表）、§3（新表约束）、§4（迁移清单）。
 
-### SVC-STRAT-G4 · 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036）[P1] ⬜
+### SVC-STRAT-G4 · 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036）[P1] 🔶
 
 - **① 目标**：把「编译链路挂了会怎么样、多久放弃、怎么查、怎么回滚」成文并跑过一次——本仓的外部依赖（TinyGo 工具链 / `cmd/compiler` 子进程）是全系统最容易静默失败的一环。
 - **② 上下文**：QT-41c 已落跨进程闭环：`POST .../build` → `internal/compilerclient` 派发 `cmd/compiler` → 内部端点回写 `queued → running → succeeded | failed`（失败带 `error_code`），`-compiler-bin` 为空时 build 端点 fail-closed 503 `compile_unavailable`；G5 已落编译 job 的队列 / 重试 / 限并发；本仓 `docs/evidence/QT-41b-tinygo-0.34.0.md` 有真工具链取证姿势。**缺口**：无 runbook（全 workspace `runbook` 只在 ADR-036 正文里出现）；无 `/readyz`（属 `SVC-STRAT-G1` ③）；子进程超时上界与「编译器进程被 OOM killer 杀掉」这类失败在文档里没有位置；`STRATEGY_TINYGO_IMAGE` 腿的 skip 与 fail 未区分口径。
@@ -408,6 +408,31 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 - **④ 约束与非目标**：不改资产/编译的业务口径；不引 APM；不做多副本；不在本单把 TinyGo 版本升级（锁 0.34.0 是既有裁决，动它另立单）；不接 core 消费面。
 - **⑤ 验收**：① 失败语义表七类齐全且每条有用例或指明无用例原因；② 超时用例：注入一个永不退出的假 compiler ⇒ 到上界即 `failed` 且有 `error_code`（破坏验证：去掉上界 ⇒ 用例红）；③ 演练有真退出码（503 → 恢复 200）；④ runbook 每条命令当场执行过；⑤ 三条命令绿。
 - **⑥ 边界**：本仓失败语义与运维面；core 侧的运行时 WASM host 留 core（ADR-036 §6 第 1 条），不在本单。
+
+> **施工记录（2026-11-07，🔶 未全绿）**
+>
+> - **②（核心代码）**：`internal/compilerclient` 的子进程固定走 `exec.CommandContext`，新增显式上界
+>   `DefaultProcessTimeout=20m` / `MaxProcessTimeout=1h`，flag `-compiler-process-timeout`；实际生效 =
+>   min(批次预算, 上界)。到点杀进程后回写 `failed + error_code=compile_timeout`（新增 wire code，§4.1 MINOR），
+>   不允许留 `running`。真子进程杀进程用例 `TestExecRunner_KillsProcessAtDeadline`；行为用例
+>   `TestDispatchBuild_ProcessDeadlineFailsJobWithCompileTimeout`（150ms 上界）。
+> - **①/③**：`docs/api-schema.md` §2.2 七类失败语义表（HTTP / 重试 / job 终态 / 调用方动作）、§3.1 重试边界
+>   （作业级 3 次、2s 固定退避；进程级不自动重投；HTTP 调用方退避表）。
+> - **④**：`docs/runbook.md` 已建；本机实跑腿标 `[已执行]`，PG / Docker / TinyGo 腿标 `[未执行]`（不假装修过）。
+>   迁移重放走 `TestPGMigrationsAreReplayable`（需 `STRATEGY_TEST_DSN`），真工具链走
+>   `TestCompile_RealTinyGoImage`（需 `STRATEGY_TINYGO_IMAGE` + Docker）。
+> - **⑤**：真进程演练 `-compiler-bin` 指向不存在文件 → HTTP **503** `compile_unavailable`；恢复腿换成可启动的
+>   `compiler.exe` → **202** + `job_id`（工具链锁缺失，随后 `failed/compile_failed`，属预期）。单测版演练
+>   `TestG4Drill_MissingCompilerBinFailsClosedThenRecovers` 额外断言落库行 `failed/compile_unavailable` 与恢复后 `202/queued`。
+>   注：build 的成功码按冻结契约是 **202**（异步受理），不改成 200；「复通」以 202 + 随后
+>   `GET .../builds/{job_id}` **200/queued** 证明，成功码语义不动。
+> - **七类对应用例**：`compile_unavailable` → 上述演练；`ErrCompileFailed` → 恢复腿真进程 + `compilerjob`
+>   既有重试用例；`ErrSourceTooLarge` → `internal/asset/asset_test.go` 超限用例；`ErrArtifactTooLarge` →
+>   `asset_test.go` / `pgstore_test.go` 超限用例；派发失败 → 演练单测；回写失败 → `compilerjob`
+>   `TestQueue_RetriesRunningReport` / `TestQueue_TerminalReportFailureDoesNotFlipSuccess`（无真停服注入，
+>   人工收口见 runbook §6）；超时 → 两个新用例。
+> - **未执行（故不标 ✅）**：真 PG 迁移重放、真 TinyGo 0.34.0 镜像编译、真回写面停机的端到端演练。
+> - **门禁**：`gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test ./... -count=1` 均退出码 0。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 

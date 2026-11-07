@@ -204,6 +204,10 @@ const (
 	ErrorCodeCompileUnavailable = "compile_unavailable"
 	ErrorCodePayloadTooLarge    = "payload_too_large"
 	ErrorCodeArtifactInvalid    = "artifact_invalid"
+	// ErrorCodeCompileTimeout 是 cmd/compiler 子进程超过硬上界被收口时的归因码
+	// （SVC-STRAT-G4）。它与 compile_failed 分开：前者是「作业没跑完」，后者是
+	// 「编译器跑了但这次编译失败」，调用方的处置不同（重投 vs 改源码）。
+	ErrorCodeCompileTimeout = "compile_timeout"
 )
 
 // BuildJobReport 是编译进程经内部端点回写的一次状态变更。

@@ -61,7 +61,10 @@ internal/
                      strategy_build_jobs 同一套，终态可检索）→ 编译 → artifact_hash → 内部端点回填
                      + StatusReporter（running / 终态回写内部端点，error_code 归因）
   compilerclient/    资产服务侧的编译端口：实现 asset.Compiler + asset.BuildDispatcher，把作业写成
-                     临时 job JSON 并启动 cmd/compiler；Compile 不可用（派发模式）
+                     临时 job JSON 并启动 cmd/compiler；Compile 不可用（派发模式）。
+                     子进程走 exec.CommandContext，存活上界 = min(批次预算, -compiler-process-timeout)，
+                     默认 20m / 最大 1h（常量 DefaultProcessTimeout、MaxProcessTimeout）；到点杀掉进程并
+                     回写 failed + compile_timeout，不留 running（G4 ②）。
 doc.go               仓级包文档（无代码）
 ```
 

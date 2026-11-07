@@ -19,6 +19,7 @@ type externalCompilerConfig struct {
 	ToolchainArgs    []string
 	EnvAllowlist     []string
 	Timeout          time.Duration
+	ProcessTimeout   time.Duration
 	MaxAttempts      int
 	RetryBackoff     time.Duration
 }
@@ -42,6 +43,7 @@ func newExternalCompiler(cfg externalCompilerConfig) (asset.Compiler, error) {
 		EnvAllowlist:     cfg.EnvAllowlist,
 		MemoryLimitBytes: asset.MaxMemoryLimitBytes,
 		Timeout:          cfg.Timeout,
+		ProcessTimeout:   cfg.ProcessTimeout,
 		MaxAttempts:      cfg.MaxAttempts,
 		RetryBackoff:     cfg.RetryBackoff,
 	})

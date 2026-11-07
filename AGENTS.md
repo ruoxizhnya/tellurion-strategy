@@ -17,6 +17,10 @@
 闸（`internal/httpapi/policy.go`，只认 `service`）；promote 要求 `X-Actor` 并落 `strategy.strategy_promotions`
 审计；新增公开 `/healthz` / `/readyz`；按身份令牌桶限流（探针豁免，鉴权先于限流）；版本列表分页；
 build 幂等键（同 `(strategy, version, toolchain)` 未终态作业复用 `job_id`）。
+**SVC-STRAT-G4（2026-11-07，🔶）**：编译链路七类失败语义成文（`docs/api-schema.md` §2.2）、重试边界（§3.1）、
+运维手册 `docs/runbook.md`；`cmd/compiler` 子进程加显式硬上界 `-compiler-process-timeout`（默认 20m、最大 1h，
+走 `exec.CommandContext`），到点落 `failed + error_code=compile_timeout`，不留 `running`。
+真 PG 迁移重放 / 真 TinyGo 镜像 / 真回写停服演练未执行，故仍标 🔶（详见 `docs/TASKS.md` 该单施工记录）。
 
 **今天的实现**：`core:pkg/strategy`（运行时 + 插件 + `SignalProvider`）+ `strategies` 表（定义）。本仓只收"资产"这一半，**运行时留在 core**。
 

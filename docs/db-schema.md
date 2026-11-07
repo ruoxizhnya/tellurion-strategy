@@ -29,7 +29,7 @@ verified-by: QT-41c 落地——`strategy_build_jobs` 追加 `error_code`（可�
 - `strategy_artifact_blobs`：`PRIMARY KEY (strategy_id, artifact_hash)` + `octet_length(bytes) <= 8388608`。
 - `strategy_build_jobs`：`PRIMARY KEY (id)` + `state IN ('queued','running','succeeded','failed')`；
   `(strategy_id, version_hash)` 外键指向版本行；`finished_at` 只在终态写入。
-  `error_code` 是**机器可读归因码**（`compile_failed` / `compile_unavailable` / `payload_too_large` / `artifact_invalid`），
+  `error_code` 是**机器可读归因码**（`compile_failed` / `compile_unavailable` / `payload_too_large` / `artifact_invalid` / `compile_timeout`），
   非空判定由服务层做（成功作业写空串），`NOT NULL DEFAULT ''` 保证旧行可读。
 - `strategy_promotions`：`PRIMARY KEY (id)`（BIGSERIAL）+ `actor <> ''` + `outcome <> ''`；
   **不设外键**——策略/版本被删也不能连带抹掉审计；只追加，不 UPDATE / DELETE。

@@ -83,6 +83,9 @@ func TestNew_ValidatesRequiredFields(t *testing.T) {
 	if compiler.ToolchainID() != "tinygo 0.34" {
 		t.Fatalf("ToolchainID = %q", compiler.ToolchainID())
 	}
+	if compiler.cfg.ProcessTimeout != DefaultProcessTimeout {
+		t.Fatalf("default process timeout = %s, want %s", compiler.cfg.ProcessTimeout, DefaultProcessTimeout)
+	}
 	if _, err := compiler.Compile(context.Background(), asset.CompileRequest{}); !errors.Is(err, ErrCompileNotDispatched) {
 		t.Fatalf("Compile err = %v, want ErrCompileNotDispatched", err)
 	}
@@ -92,6 +95,16 @@ func TestNew_ValidatesRequiredFields(t *testing.T) {
 		RetryBackoff: -time.Second,
 	}); !errors.Is(err, asset.ErrInvalidParameter) {
 		t.Fatalf("negative backoff err = %v, want ErrInvalidParameter", err)
+	}
+	// 进程上界必须落在 (0, MaxProcessTimeout]：超出一小时等于没有上界。
+	for _, bad := range []time.Duration{-time.Second, MaxProcessTimeout + time.Second} {
+		if _, err := New(Config{
+			Bin: "compiler", AssetURL: "http://127.0.0.1:1", ToolchainName: "tinygo",
+			ToolchainVersion: "0.34", ToolchainPath: "tinygo", ToolchainLock: "lock",
+			ProcessTimeout: bad,
+		}); !errors.Is(err, asset.ErrInvalidParameter) {
+			t.Fatalf("process timeout %s err = %v, want ErrInvalidParameter", bad, err)
+		}
 	}
 }
 
@@ -294,4 +307,122 @@ func TestDispatchBuild_SkipsBackfillWhenJobAlreadyTerminal(t *testing.T) {
 	if n := atomic.LoadInt32(&posts); n != 0 {
 		t.Fatalf("posted %d failed reports for an already-succeeded job", n)
 	}
+}
+
+// hangingProcess 模拟一个永不退出的编译进程：wait 只在 ctx 到点时返回。
+// 它不读 job 文件、不主动退出——与「工具链联网解析挂住」同一个形状。
+type hangingProcess struct {
+	started chan struct{}
+}
+
+func (h *hangingProcess) run(ctx context.Context, _ string, _ []string, _ []string) (func() error, error) {
+	if h.started != nil {
+		select {
+		case h.started <- struct{}{}:
+		default:
+		}
+	}
+	return func() error {
+		<-ctx.Done()
+		return ctx.Err()
+	}, nil
+}
+
+// 验收 ②（G4）：进程到上界必须把 job 收口成 failed + compile_timeout，
+// 不许留在 running。去掉 DispatchBuild 里的 processDeadline 会让本用例红：
+// wait 永不返回，下面 5s 的等待窗口拿不到回写。
+func TestDispatchBuild_ProcessDeadlineFailsJobWithCompileTimeout(t *testing.T) {
+	reports := make(chan asset.BuildJobReport, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/strategies/"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"state":"running"}`))
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/internal/strategies/"):
+			var report asset.BuildJobReport
+			if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			reports <- report
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"state":"failed"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	proc := &hangingProcess{started: make(chan struct{}, 1)}
+	cfg := validConfig(srv, proc.run)
+	cfg.ProcessTimeout = 150 * time.Millisecond
+	compiler, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := asset.DispatchRequest{
+		JobID: "job_hang",
+		CompileRequest: asset.CompileRequest{
+			StrategyID: "st_1", VersionHash: strings.Repeat("a", 64),
+			Carrier: asset.CarrierWASM, ABIVersion: "on_bar/2", Entry: "OnBar", Source: "src",
+		},
+	}
+	start := time.Now()
+	if err := compiler.DispatchBuild(context.Background(), req); err != nil {
+		t.Fatalf("DispatchBuild: %v", err)
+	}
+	select {
+	case <-proc.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the fake compiler process never started")
+	}
+
+	select {
+	case report := <-reports:
+		if report.State != asset.JobFailed {
+			t.Fatalf("state = %s, want failed", report.State)
+		}
+		if report.ErrorCode != asset.ErrorCodeCompileTimeout {
+			t.Fatalf("error_code = %q, want %q", report.ErrorCode, asset.ErrorCodeCompileTimeout)
+		}
+		if !strings.Contains(report.Error, ErrProcessTimeout.Error()) {
+			t.Fatalf("error = %q, want the process-timeout sentinel", report.Error)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no terminal report within 5s: the process deadline did not fire, the job would stay running")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("deadline enforcement took %s, want the 150ms bound", elapsed)
+	}
+}
+
+// execRunner 必须走 exec.CommandContext：真起一个不退出的子进程，
+// 到点必须被杀掉且 Wait 返回错误（AUD-56 的同型坑）。
+func TestExecRunner_KillsProcessAtDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	wait, err := execRunner(ctx, os.Args[0],
+		[]string{"-test.run=^TestBlockingHelperProcess$"},
+		append(os.Environ(), "GO_WANT_BLOCKING_HELPER=1"))
+	if err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	if err := wait(); err == nil {
+		t.Fatal("wait returned nil after the deadline; the process was not killed")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("process survived the 300ms deadline for %s", elapsed)
+	}
+}
+
+// TestBlockingHelperProcess 是被 TestExecRunner_KillsProcessAtDeadline 拉起的
+// 子进程本体：只在环境变量命中时阻塞，正常情况下立即返回。
+func TestBlockingHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_BLOCKING_HELPER") != "1" {
+		return
+	}
+	time.Sleep(5 * time.Minute)
 }

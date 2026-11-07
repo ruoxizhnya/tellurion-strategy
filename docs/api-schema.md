@@ -98,9 +98,11 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 > `succeeded` 必须带 64 位小写 hex `artifact_hash`，且该 artifact 行已登记并属于同一 `(strategy, version, toolchain)`，
 > 否则 409 `artifact_invalid`。`failed` 的 `error_code` 缺省 `compile_failed`。job 不存在或不属于路径 id → 404 `job_not_found`（不跨策略枚举）。
 >
-> **`error_code`（机器可读归因，随 BuildJob 返回）**：`compile_failed` / `compile_unavailable` / `payload_too_large` / `artifact_invalid`。
+> **`error_code`（机器可读归因，随 BuildJob 返回）**：`compile_failed` / `compile_unavailable` / `payload_too_large` / `artifact_invalid` / `compile_timeout`。
 > 它与 HTTP 错误码不是一回事：503 `compile_unavailable` 表示「服务没装配/启动不了编译器」，作业里的
-> `error_code=compile_failed` 表示「编译器跑了但这次编译失败」，调用方据此区分。
+> `error_code=compile_failed` 表示「编译器跑了但这次编译失败」，`compile_timeout` 表示「子进程超过硬上界被杀」
+> （SVC-STRAT-G4 新增，属 §4.1 的 MINOR 加码）；调用方据此区分。
+> 七类失败语义与重试边界见 §2.2 / §3。
 
 ## 2. 错误码与 fail-closed 语义
 
@@ -178,6 +180,31 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 > `contracts.ErrAbiVersionMismatch` **不在本服务的出口表里**：本仓不判定内核能力集，只在解析
 > `abi_version` 时用 `ErrInvalidABIVersion`（400）。跨仓消费方按契约哨兵 `errors.Is` 判定的语义不变。
 
+### 2.2 编译链路七类失败语义（G4 ①）
+
+> 编译是**异步作业**：build 端点只回答「是否受理」，真正的成败在 `GET /api/strategies/{id}/builds/{job_id}`。
+> 因此下表的「HTTP」列给的是**同步面**的返回码（多为 202），终态与归因看 job 的 `state` / `error_code`。
+> 调用方必须按 `error_code` 分支，不要解析 `error` 文案。
+
+| # | 类别 | 触发 | 同步面 HTTP | job 终态 / `error_code` | 是否重试 | 调用方该做什么 |
+|---|---|---|---|---|---|---|
+| 1 | `compile_unavailable` | 服务未装配编译器（`-compiler-bin` 为空）、配置非法，或派发时二进制不可启动 | build 503 `compile_unavailable` | 未落 job；**已落 queued 后**派发失败则 `failed` / `compile_unavailable` | **不自动重试**（同一请求不会自愈） | 停止重投，报运维修装配（bin 路径 / 权限 / 挂载）；修好后重投 |
+| 2 | `ErrCompileFailed` | 工具链跑了但退出非零、产物缺失、单次工具链超时且作业级重试耗尽 | build 202 | `failed` / `compile_failed` | 作业级最多 3 次、固定 2s 退避（见 §3.1）；终态后不再重试 | 读 `error` 定位源码 / 工具链；改源码或升工具链后**用新版本**重投；同版本重投是可预期的同样失败 |
+| 3 | `ErrSourceTooLarge` | 源码 > 1MiB（`PUT /source`） | 413 `payload_too_large` | 不创建 job（无终态） | 不重试 | 裁剪源码后重新上传；不要改请求头绕 |
+| 4 | `ErrArtifactTooLarge` | 产物 > 8MiB（编译侧），或内部登记 > 8MiB | 编译侧 build 202；内部登记 413 `payload_too_large` | `failed` / `payload_too_large`（编译侧重试耗尽后上报） | 作业级重试不改变结果 | 优化产物；确需更大上界另立单改常量，**不要**靠重试 |
+| 5 | 派发失败 | job 已落 `queued`，启动 `cmd/compiler` 失败（临时 job 文件写不了 / 进程 fork 失败） | build 503 `compile_unavailable` | `failed` / `compile_unavailable` | 不自动重试 | 排查磁盘 / 权限 / `-compiler-bin`，修好后重投；503 不是「稍后自然好」 |
+| 6 | 回写失败 | `cmd/compiler` 无法 POST 内部端点（网络 / 鉴权 / 服务停机），或终态上报被拒 | build 202 | **非终态**：停在 `queued` 或 `running`，无 `error_code` | 编译器侧 running 上报重试 <=3 次；终态上报失败后**不再自动重试** | 继续按 job 轮询但设**停滞阈值**（进程上界 + 2min）；超阈值按 `docs/runbook.md` 人工收口为 `failed`，**不要假设作业还在跑** |
+| 7 | 超时 | `cmd/compiler` 子进程超过硬上界 `-compiler-process-timeout`（默认 20m，最大 1h），到点由 `exec.CommandContext` 杀掉 | build 202 | `failed` / `compile_timeout` | **进程级不自动重试**（作业已被杀）；工具链单次超时仍按 §3.1 重试 | 轮询到 `compile_timeout` 后查卡点（锁文件 / 镜像拉取 / 网络解析）；确认是瞬时故障可重新提交（新 job），否则先修环境 |
+
+补充口径：
+
+- **超时上界取「批次预算」与 `-compiler-process-timeout` 的较小者**。批次预算 = `maxAttempts × (timeout + backoff) + 1min`
+  （默认 3×(5m+2s)+1m ≈ 16m6s）；默认上界 20m 不截断正常重试，但多尝试 / 长超时的组合会被 20m 截断。
+  上界常量在 `internal/compilerclient`（`DefaultProcessTimeout` / `MaxProcessTimeout`），flag 在 `cmd/assetservice`。
+- **超时必须是 failed，不许留 running**：到点后等待方回写 `failed + compile_timeout`；回写本身失败就落到第 6 类，
+  由 runbook 人工收口。这条是 G4 的核心代码约束（`TestDispatchBuild_ProcessDeadlineFailsJobWithCompileTimeout`）。
+- `compile_timeout` 是新增 wire code（§4.1 MINOR），旧调用方忽略未知 `error_code` 即可；旧服务不会产生它。
+
 ## 3. 幂等性与重试
 
 - `version_hash` / `artifact_hash` 内容寻址 → 重复上传同源码是幂等（同 hash 不新增行）。
@@ -189,6 +216,35 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
   `promoted`，重复调用返回 409 `invalid_transition`（实现如此；本文件旧句「重复调用结果一致」与代码不符，
   SVC-STRAT-G1 按实现订正）。
 - `resolve?ref=hash` 无副作用，可任意重试。
+
+### 3.1 编译作业重试边界（G4 ③）
+
+**作业级（`cmd/compiler` 内部）**
+
+- 次数：`-max-attempts` 默认 **3**（含首次；`1` = 不重试）。
+- 退避：`-retry-backoff` 默认 **2s 固定退避**，不做指数退避（编译失败通常是确定性源码问题，指数只拉长终态时间）。
+- 可重试：`ErrCompileFailed`（工具链非零退出、单次超时、产物缺失）、`ErrArtifactFetchFailed`（取源码瞬时故障）、
+  以及默认 `DefaultRetryable()` 为真的其它错误。
+- 不可重试：`ErrInvalidParameter` / `ErrInvalidDefinition` / `ErrUnsupportedCarrier` /
+  `ErrInvalidABIVersion` / `ErrSourceTooLarge` / `ErrArtifactTooLarge` / `ErrArtifactHashMismatch` /
+  `ErrCompileUnavailable` / 空服务响应 / 未知工具链——重试只会重复同一次失败。
+- running 上报与编译尝试**分开计次**：上报失败不消耗编译尝试；终态上报失败不重试（见 §2.2 第 6 类）。
+
+**进程级（`assetservice` 侧，G4 新增）**
+
+- `cmd/compiler` 子进程只有**一次**机会，存活上界 = min(批次预算, `-compiler-process-timeout`)；到点杀掉并回写
+  `failed + compile_timeout`，**不重启子进程**。理由：进程级挂死多是环境（锁 / 镜像 / 网络）问题，自动重投会掩盖故障。
+
+**HTTP 调用方建议**
+
+| 面 | 重试 | 退避 |
+|---|---|---|
+| 429 `rate_limited` | 是 | 按 `Retry-After` |
+| 503 `compile_unavailable` / `auth_unavailable` | **先修部署**，修好后重投 1 次 | 1s / 2s / 4s，上限 30s，最多 5 次 |
+| 409 `compile_failed` / `invalid_transition` | 否（确定性） | 改源码 / 换版本后重投 |
+| 413 `payload_too_large` | 否 | 裁剪后重传 |
+| 202 后轮询 job | GET 可重试（无副作用） | 1–2s 间隔；总预算 = 进程上界 + 2min，超时走人工收口 |
+| 5xx `internal` / 网络错误 | 是（GET / PUT 幂等） | 指数 1s 起，上限 30s，最多 5 次 |
 
 ## 4. 版本与兼容
 

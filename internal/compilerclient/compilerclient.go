@@ -29,8 +29,27 @@ import (
 // ErrProcessStart 是编译进程没能启动（二进制不存在 / 无法 fork）。
 var ErrProcessStart = errors.New("compilerclient: failed to start compiler process")
 
+// ErrProcessTimeout 是 cmd/compiler 子进程超过了硬上界（见 DefaultProcessTimeout）。
+//
+// 它是**进程级**超时：子进程被 CommandContext 杀掉后，DispatchBuild 的等待方
+// 据此把作业收口成 failed + compile_timeout，而不是留在 running。
+var ErrProcessTimeout = errors.New("compilerclient: compiler process exceeded its deadline")
+
 // ErrCompileNotDispatched 说明 Compile 不该被调用：本实现只做跨进程派发。
 var ErrCompileNotDispatched = errors.New("compilerclient: Compile is not available; builds are dispatched to cmd/compiler")
+
+const (
+	// DefaultProcessTimeout 是 cmd/compiler 子进程的默认硬上界。
+	//
+	// 批次预算 maxAttempts×(timeout+backoff)+1min（默认 3×(5m+2s)+1m≈16m）低于
+	// 它时以批次预算为准；高于它时一律在此截断——子进程不能因为配置了多尝试 /
+	// 长超时而无限存活。core 侧 AUD-56 的同型坑：没有 CommandContext 的
+	// `go build` 挂 601s 不返回，进程级上界是最后一道闸。
+	DefaultProcessTimeout = 20 * time.Minute
+
+	// MaxProcessTimeout 是允许配置的进程上界最大值（超过它等于没有上界）。
+	MaxProcessTimeout = time.Hour
+)
 
 // ProcessRunner 启动编译器进程并返回等待函数。
 //
@@ -51,10 +70,13 @@ type Config struct {
 	EnvAllowlist     []string
 	MemoryLimitBytes int64
 	Timeout          time.Duration
-	MaxAttempts      int
-	RetryBackoff     time.Duration
-	HTTPClient       *http.Client
-	Runner           ProcessRunner
+	// ProcessTimeout 是 cmd/compiler 子进程的硬上界（0 = DefaultProcessTimeout）。
+	// 取值必须落在 (0, MaxProcessTimeout]；实际生效值取它与批次预算的较小者。
+	ProcessTimeout time.Duration
+	MaxAttempts    int
+	RetryBackoff   time.Duration
+	HTTPClient     *http.Client
+	Runner         ProcessRunner
 }
 
 // Compiler 实现 asset.Compiler + asset.BuildDispatcher。
@@ -88,6 +110,13 @@ func New(cfg Config) (*Compiler, error) {
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Minute
+	}
+	if cfg.ProcessTimeout == 0 {
+		cfg.ProcessTimeout = DefaultProcessTimeout
+	}
+	if cfg.ProcessTimeout < 0 || cfg.ProcessTimeout > MaxProcessTimeout {
+		return nil, fmt.Errorf("%w: process timeout %s out of (0, %s]",
+			asset.ErrInvalidParameter, cfg.ProcessTimeout, MaxProcessTimeout)
 	}
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = 3
@@ -147,7 +176,10 @@ func (c *Compiler) DispatchBuild(_ context.Context, req asset.DispatchRequest) e
 	}
 
 	// 请求 ctx 随 build handler 返回而取消，不能拿它管进程生命周期。
-	runCtx, cancel := context.WithTimeout(context.Background(), c.budget())
+	// 子进程存活时间 = min(批次预算, ProcessTimeout)：前者按重试配置算，
+	// 后者是**绝对上界**，防止「多尝试 × 长超时」把子进程留在 running 一侧。
+	deadline := c.processDeadline()
+	runCtx, cancel := context.WithTimeout(context.Background(), deadline)
 	wait, err := c.cfg.Runner(runCtx, c.cfg.Bin, c.args(path), os.Environ())
 	if err != nil {
 		cancel()
@@ -157,9 +189,17 @@ func (c *Compiler) DispatchBuild(_ context.Context, req asset.DispatchRequest) e
 	go func() {
 		defer cancel()
 		defer func() { _ = os.Remove(path) }()
-		if waitErr := wait(); waitErr != nil {
-			c.backfillFailed(req.StrategyID, req.JobID, waitErr)
+		waitErr := wait()
+		if waitErr == nil {
+			return
 		}
+		cause := waitErr
+		// 到上界被 CommandContext 杀掉：归因成进程超时，回写 failed +
+		// compile_timeout。没有这一步，job 会停在 running（AUD-56 的同型坑）。
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			cause = fmt.Errorf("%w after %s: %v", ErrProcessTimeout, deadline, waitErr)
+		}
+		c.backfillFailed(req.StrategyID, req.JobID, cause)
 	}()
 	return nil
 }
@@ -167,6 +207,15 @@ func (c *Compiler) DispatchBuild(_ context.Context, req asset.DispatchRequest) e
 func (c *Compiler) budget() time.Duration {
 	// 单作业：maxAttempts × (timeout + backoff) + 1min（与 cmd/compiler 的批次预算同口径）。
 	return time.Duration(c.cfg.MaxAttempts)*(c.cfg.Timeout+c.cfg.RetryBackoff) + time.Minute
+}
+
+// processDeadline 是实际生效的子进程上界：批次预算与配置上界的较小者。
+func (c *Compiler) processDeadline() time.Duration {
+	deadline := c.budget()
+	if c.cfg.ProcessTimeout > 0 && c.cfg.ProcessTimeout < deadline {
+		deadline = c.cfg.ProcessTimeout
+	}
+	return deadline
 }
 
 func (c *Compiler) args(jobPath string) []string {
@@ -207,9 +256,13 @@ func (c *Compiler) backfillFailed(strategyID, jobID string, cause error) {
 	if state == asset.JobSucceeded || state == asset.JobFailed {
 		return
 	}
+	code := asset.ErrorCodeCompileFailed
+	if errors.Is(cause, ErrProcessTimeout) {
+		code = asset.ErrorCodeCompileTimeout
+	}
 	report := asset.BuildJobReport{
 		State:     asset.JobFailed,
-		ErrorCode: asset.ErrorCodeCompileFailed,
+		ErrorCode: code,
 		Error:     cause.Error(),
 	}
 	if err := c.postReport(strategyID, jobID, report); err != nil {
@@ -267,6 +320,10 @@ func (c *Compiler) postReport(strategyID, jobID string, report asset.BuildJobRep
 }
 
 // execRunner 是默认 ProcessRunner：Start 失败即启动失败，Wait 放到调用方。
+//
+// 必须走 exec.CommandContext：没有它的 `go build` 能在联网解析时挂 601s
+// （core 侧 AUD-56 的实测）。ctx 到点时 CommandContext 杀掉子进程，Wait
+// 返回错误，DispatchBuild 据此把作业收口成 failed + error_code。
 func execRunner(ctx context.Context, bin string, args []string, env []string) (func() error, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env

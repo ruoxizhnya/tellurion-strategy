@@ -23,6 +23,7 @@ import (
 	kithttp "github.com/ruoxizhnya/tellurion-kit/auth/httpadapter"
 
 	"tellurion-strategy/internal/asset"
+	"tellurion-strategy/internal/compilerclient"
 	"tellurion-strategy/internal/httpapi"
 )
 
@@ -61,6 +62,8 @@ func run() error {
 	compilerPath := flag.String("compiler-toolchain-path", "", "absolute path to the external toolchain binary (required with -compiler-bin)")
 	compilerLock := flag.String("compiler-toolchain-lock", "", "path to toolchains.lock (required with -compiler-bin)")
 	compilerTimeout := flag.Duration("compiler-timeout", 5*time.Minute, "per-attempt compile timeout for the external compiler")
+	compilerProcessTimeout := flag.Duration("compiler-process-timeout", compilerclient.DefaultProcessTimeout,
+		"hard upper bound on one cmd/compiler child process (SVC-STRAT-G4); over the bound the job is failed with error_code=compile_timeout")
 	compilerAttempts := flag.Int("compiler-max-attempts", 3, "attempts per external compile job (1 disables retries)")
 	compilerBackoff := flag.Duration("compiler-retry-backoff", 2*time.Second, "delay between attempts of one external compile job")
 	var compilerArgs repeatableFlag
@@ -141,6 +144,7 @@ func run() error {
 		ToolchainArgs:    compilerArgs,
 		EnvAllowlist:     compilerEnv,
 		Timeout:          *compilerTimeout,
+		ProcessTimeout:   *compilerProcessTimeout,
 		MaxAttempts:      *compilerAttempts,
 		RetryBackoff:     *compilerBackoff,
 	})
