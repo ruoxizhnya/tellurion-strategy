@@ -305,7 +305,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > 模板：`tellurion:docs/design/qt-decoupling/data-service-contract-and-ownership.md` §4.1。
 > ~~模板见 `target-module-topology.md` UnifiedDataPoint 节~~ —— 那是**幻影节名**（core 全文 grep `UnifiedDataPoint` 在该文件 0 命中），2026-10-22 改指 §4.1。正文以彼处为准，此处只留指针、不镜像。
 
-### SVC-STRAT-G1 · 服务就绪门 G1：鉴权 · 公开健康端点 · 错误模型 · 版本化（ADR-036）[P0] 🔶（2026-11-07 施工；PG 腿未执行）
+### SVC-STRAT-G1 · 服务就绪门 G1：鉴权 · 公开健康端点 · 错误模型 · 版本化（ADR-036）[P0] ✅（2026-11-07，真库腿补齐）
 
 - **① 目标**：本仓 10+2 条端点满足 ADR-036 §3 的 G1——版本化 API、错误模型、鉴权/授权、幂等、分页/限流——其中**鉴权是已知缺口，不是新需求**。
 - **② 上下文**：`internal/httpapi/api.go:46` 的 `POST /api/strategies/{id}/versions/{hash}/promote` 今天**无鉴权、无审计**（本仓 G0 与 G3 两条单的「如实登记」都点名过它：「promote 鉴权缺口未修——属 G3 / QT-32 闸门，不能在本轮自行引入 kit」）；`go.mod` **未引入 kit**（实测直接依赖 = contracts `v0.5.0` + pgx `v5.7.3` + testify）；公开 `/healthz` 未落（G0 因此只能用 TCP 探针）；`/readyz` 全 workspace 0 命中。**已裁的姿势**：第三轮裁决 ⑫「promote 审批人 = 面 B1」——core 作唯一对外入口（JWT `sub` → 受信 `X-Actor` + service token），本仓**只对 `/promote` + 两条 `/internal/*`** 引 kit `auth/httpadapter`，`X-Actor` 缺失 400 `actor_required`，promote 落审计（人/时间/结论），其余 9 条靠端口隔离并在 `api-schema.md` 写明。
@@ -341,13 +341,20 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > 3. 删掉 `SubmitBuild` 的 `ActiveJob` 早退 → `TestSubmitBuildIsIdempotentWhileActive` 红
 >    （第二次 `job_id` 不同 / 编译器被调 2 次）；还原后绿。
 >
-> **未执行（🔶 的原因，不是已完成）**：
-> - **真 PG 腿全部未执行**（Docker 引擎不可用）：`PG.Ready`（ping + 六张表是否存在）、`PG.RecordPromotion` 的 INSERT、
->   `PG.ActiveJob` 的 SQL、`strategy_promotions` 在既有库上的可重入迁移——只用 Memory 实现、静态编译与 `go vet` 验证过，
->   **没有连过真库**。
-> - **真 service token 端到端 promote 未执行**：token 签发分发属 `QT-76`（core），本仓只能用 kit 在测试里自签。
-> - 未跑 `docker compose -f deploy/compose.yaml config`（compose 已改，加 `JWT_SECRET` / `AUTH_INSECURE_EXPOSURE`），
->   按硬约束记「未执行」。
+> **真库腿补跑（2026-11-07 晚；便携 PG 16.2 `127.0.0.1:55432`，库 `tellurion_strategy_test`）**：
+> - **新增 `internal/asset/g1_pg_test.go`**（无 `STRATEGY_TEST_DSN` 即 skip）：
+>   `TestPG_ReadyRequiresMigratedSchema`（PASS 0.15s）——已迁移库 `Ready` → nil；同一 PG 的 `postgres` 库（无本仓迁移）→ 报 `migrations not applied`（真腿证明「能连 ≠ 就绪」）；
+>   `TestPG_RecordPromotionIsAppendOnly`（PASS 0.11s）——两条事件落 2 行，空 actor / 空 outcome → `ErrInvalidParameter` 且行数仍 2；
+>   `TestPG_ActiveJobPicksEarliestOpenJob`（PASS 0.11s）——`queued`/`running` 三行取最早、最早落终态后退到次早、全终态 → not found。
+>   `go test ./internal/asset -count=1 -v -run 'TestPG_(Ready|RecordPromotion|ActiveJob)'` → **EXIT=0**。
+> - **真服务 + 真库探针**：`cmd/assetservice`（`STRATEGY_DATABASE_URL` 指向上述库，监听 `127.0.0.1:18090`）→
+>   `/healthz` `200 {"status":"ok"}`、`/readyz` `200 {"status":"ready","store":"postgres"}`；`pg_ctl … stop -m fast`（`STOP_EXIT=0`）后
+>   `/readyz` → `503 {"status":"not_ready","store":"postgres","error":"postgres ping: failed to connect to … actively refused it."}`，
+>   同刻 `/healthz` 仍 `200 {"status":"ok"}`；重启库后 `/readyz` → `200`（**未重启服务**，池自愈）。
+>
+> **仍未执行（如实，不写成「通过」）**：
+> - **真 service token 端到端 promote**：token 签发分发属 `QT-76`（core），本仓只能用 kit 在测试里自签（档位用例已覆盖 401 / 放行三条 / 白名单外红）。
+> - `docker compose -f deploy/compose.yaml config`（compose 已改，加 `JWT_SECRET` / `AUTH_INSECURE_EXPOSURE`），Docker 引擎不可用。
 >
 > **顺带逮到的文档-实现不符（按实现订正，未改代码）**：`api-schema.md` §3 旧句「promote / deprecate 幂等
 > （重复调用结果一致）」与状态机不符——重复 promote / deprecate 都返回 409 `invalid_transition`；已在 §3 改写并注明。
@@ -360,7 +367,7 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > §4.2 分页、§7 逐端点版本 + 错误码）、`db-schema.md`（新表 + 约束 + 迁移）、`ARCHITECTURE.md`（分层/包布局/入口）、
 > `AGENTS.md`（§1 状态 + §4 kit `v0.1.4` 登记）、`README.md` 与 `deploy/compose.yaml`（启动变量）。
 
-### SVC-STRAT-G2 · 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036）[P0] 🔶（2026-11-07 施工；真 PG 重放腿未执行）
+### SVC-STRAT-G2 · 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036）[P0] ✅（2026-11-07，真库重放腿补齐）
 
 - **① 目标**：本仓六张 `strategy.*` 表的 DDL 归属可自证——迁移可重复执行、不跨 schema 写、每张表「谁写」有答案；同时把「core 的 `strategies` 表还在被谁写」这条**双 owner 事实**如实登记，不假装 G2 已过。
 - **② 上下文**：`internal/asset` 有 Memory + PG 两个 Store、启动迁移、两级缓存、14 个内置策略登记；本仓 `db-schema.md` 已声明六张表（G1 新增 `strategy_promotions`）；但**定义的真相源今天仍在 core**（`quant.strategies` + core 本地注册表，实测 core 侧写点见 `tellurion:pkg/storage/strategies.go` 的 5 个方法 + `cmd/analysis/setup.go:336` 的 `SeedStrategies`），ADR-036 §5.2 明写双 owner 是**迁移中的临时状态**，G2 的验收是「它的表只有它写」⇒ **本仓 G2 在 core 停写前不可能 ✅**，本单交付的是「本仓这一半的自证 + 缺口登记」。跨仓待核 K5（软删/版本语义对齐）已在 `db-schema.md` §1.1 作答。
@@ -371,10 +378,12 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 
 > **施工记录（2026-11-07）**：
 >
-> **③-① 迁移重放自证（代码已落，腿未跑）**：`internal/asset/g2_pg_test.go` 的
+> **③-① 迁移重放自证（2026-11-07 晚真跑）**：`internal/asset/g2_pg_test.go` 的
 > `TestPGMigrationsAreReplayable`——同库连跑两次 `Migrate()`，比对列集（`information_schema.columns`）、
 > 索引集（`pg_indexes`）与六张表行数压成的 sha256。无 `STRATEGY_TEST_DSN` 时 skip。
-> **未执行**：本机 Docker 引擎不可用，**没有连过真 PG**；这条腿的输出（两次指纹逐位相同）**未取得**。
+> **真库输出（便携 PG 16.2，库 `tellurion_strategy_test`）**：
+> `schema fingerprint stable across replay: e1403be15a4608fd2b06856c1d56aebcb13d405bae4668b75598c90cb1c5639a`
+> （`--- PASS: TestPGMigrationsAreReplayable (0.08s)`，EXIT=0）——两次重放指纹逐位相同；`strategy_promotions` 在既有库上的可重入迁移同批被覆盖。
 >
 > **③-② 禁跨 schema 写护栏（已落）**：`internal/asset/g2_test.go` 的 `TestNoCrossSchemaWrites`
 > 静态扫全仓 `.go`，命中 `insert/update/delete/create table/create index/alter table/drop table/truncate table`
@@ -392,11 +401,9 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 > **③-④ 「今天谁写」写实**：`db-schema.md` §1.1「写者（今天）」行 + 表下「双 owner 事实」说明，
 > 明确今天仍是 core 写 `quant.strategies`、本仓零写它；未写成目标态。
 >
-> **未执行（🔶 的原因）**：真 PG 重放腿（两次指纹）、以及「既有库上 `strategy_promotions` 可重入迁移」的实证。
-> 这两条都要 `STRATEGY_TEST_DSN` + Docker PG，本机不具备。
->
-> **验收状态**：②③④ 已满足；①（重放输出）与「抽 2 行核对 core 实测」中的运行时部分记「未执行」；
-> 三条命令（gofmt/build/vet/test）绿。
+> **⑤ 验收对照（2026-11-07 晚补齐后）**：① 重放腿已真跑，两次指纹逐位相同（输出见上，EXIT=0）；② 破坏验证当日已「红 → 逐字还原 → 绿」；
+> ③ K5 对照表逐列有出处；④ 抽 2 行核对 core 实测——`tellurion:pkg/storage/strategies.go:14`（`INSERT INTO strategies …`，upsert）
+> 与 `:107`（`UPDATE strategies SET is_active = FALSE …`，软删）与 `db-schema.md` §1.1 的「今天谁写 / 删除语义」两行一致；⑤ 三条命令绿。
 >
 > **文档**：`db-schema.md` §1（六张表）、§1.1（K5 对照表）、§3（新表约束）、§4（迁移清单）。
 
