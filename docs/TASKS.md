@@ -438,7 +438,14 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 >   `asset_test.go` / `pgstore_test.go` 超限用例；派发失败 → 演练单测；回写失败 → `compilerjob`
 >   `TestQueue_RetriesRunningReport` / `TestQueue_TerminalReportFailureDoesNotFlipSuccess`（无真停服注入，
 >   人工收口见 runbook §6）；超时 → 两个新用例。
-> - **未执行（故不标 ✅）**：真 PG 迁移重放、真 TinyGo 0.34.0 镜像编译、真回写面停机的端到端演练。
+> - **PG 腿补齐执行（2026-11-10）**：本机 PostgreSQL 16.15 起库 `tellurion_strategy_test`，
+>   `STRATEGY_TEST_DSN=... go test ./internal/asset -count=1` **全绿（EXIT=0）**，含
+>   `TestPGMigrationsAreReplayable`（输出 `schema fingerprint stable across replay:
+>   10f6ee398ac1553f0912fabb1dd671c5a44dd8bf69494ce432e383d3ea329354`）、`TestPG_ServiceOnPG`、
+>   `TestPG_ReadyRequiresMigratedSchema`、`TestPG_MigrateIsIdempotent` 等 10 条 PG 用例。
+>   `docs/runbook.md` 该条已由 `[未执行]` 改为 `[已执行 2026-11-10]`。
+> - **未执行（故仍不标 ✅）**：真 TinyGo 0.34.0 镜像编译（需 Docker 引擎，本机 Rancher Desktop 未启动、
+>   `docker info` 连不上 `dockerDesktopLinuxEngine`）、真回写面停机的端到端演练（人工收口见 runbook §6）。
 > - **门禁**：`gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test ./... -count=1` 均退出码 0。
 
 ## 施工序（候选单，开工前必须展开成六字段）
