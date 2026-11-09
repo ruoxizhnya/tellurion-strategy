@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
+last-verified: 2026-11-10
+verified-by: SVC-STRAT-G4 真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG 16.15 + 真服务 `:18090` + 替身编译进程：非零退出自动 failed / 无终态回写留 running / 重启后仍 running / 内部端点收口 200 且同终态幂等、回退 running 409；库与临时件已清，0 代码改动）；SVC-STRAT-G4 PG 腿（2026-11-10，`tellurion_strategy_test` 全绿含迁移重放指纹 `10f6ee39…2954`）；QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -445,8 +445,19 @@ verified-by: QT-41c 收口 QT-41b 余项——编译进程状态回写内部端�
 >   `TestPG_ReadyRequiresMigratedSchema`、`TestPG_MigrateIsIdempotent` 等 10 条 PG 用例。
 >   `docs/runbook.md` 该条已由 `[未执行]` 改为 `[已执行 2026-11-10]`。
 > - **未执行（故仍不标 ✅）**：真 TinyGo 0.34.0 镜像编译（需 Docker 引擎，本机 Rancher Desktop 未启动、
->   `docker info` 连不上 `dockerDesktopLinuxEngine`）、真回写面停机的端到端演练（人工收口见 runbook §6）。
+>   `docker info` 连不上 `dockerDesktopLinuxEngine`）。~~真回写面停机的端到端演练（人工收口见 runbook §6）~~ **✅ 已补 2026-11-10**（见下条）。
 > - **门禁**：`gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test ./... -count=1` 均退出码 0。
+>
+> **真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG · 真进程 · 0 代码改动）**
+>
+> - **环境**：真 PostgreSQL 16.15 @ `127.0.0.1:5432`（一次性库 `tellurion_strategy_drill`）+ `cmd/assetservice` 真二进制 `:18090` + 替身编译进程（Go 程序，按名扫描 `-job` / `-asset-url`，只回写 `running` 后正常退出、永不回写终态）。替身**不是**真 TinyGo，本腿验的是**状态机 + 落库 + 人工收口**，不是编译产物。
+> - **腿 A（非零退出自动收口）**：替身因不认识的开关 `exit status 2` ⇒ 服务补报 `failed / compile_failed`，`GET .../builds/{job_id}` 立即 **200 `failed`**（`error` 含 `exit status 2`）。证明进程崩溃不会留 `running`。
+> - **腿 B（正常退出但永不回写终态）**：修好替身参数后 `POST .../build` **202**，轮询 `GET .../builds/{job_id}` → **200 `running`**；随后**停掉资产服务**（回写面停机）并等替身退出 ⇒ 端口 `18090=False`、`Get-Process stubcompiler` 空。
+> - **腿 C（真 PG 持久）**：同一 DSN 重启服务，`GET .../builds/{job_id}` 仍 **200 `running`**（`created_at` 原样），证明卡死状态在库里而非内存。
+> - **腿 D（人工收口 + 幂等 + 终态不可回退）**：内部端点 `{"state":"failed","error_code":"compile_failed",…}` → **200 failed**；重复同一请求 → **200**（同 `finished_at`）；再报 `running` → **409 `invalid_transition`**；psql 直读 `strategy.strategy_build_jobs` → `st_d26d9…|failed|compile_failed|2026-11-09 22:04:47`。
+> - **文档订正**：runbook §6 旧句「已是终态会 409」不准确——同终态重复上报是幂等 200，409 只出现在把终态改回 `running` 等非法转移；已按实测改写并新增 §6.1 演练记录。
+> - **清场**：服务停、库 `DROP … WITH (FORCE)`（`DROP_EXIT=0`，`pg_database` 无残留）、临时目录（服务/替身二进制、日志、请求响应体、cache、`go.mod`）全删；本仓 `git status` clean。
+> - **仍未执行（故仍不标 ✅）**：真 TinyGo 0.34.0 镜像编译（Docker 引擎不可用）。G4 的「真回写面停机」腿据此结清。
 
 ## 施工序（候选单，开工前必须展开成六字段）
 

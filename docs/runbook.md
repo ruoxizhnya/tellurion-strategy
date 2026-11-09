@@ -6,6 +6,9 @@
 > 记录口径：每条命令后标了执行状态。`[已执行 2026-11-07]` 是本机（Windows 10 / PowerShell 5，
 > 无 PG、Docker 引擎不可用、无 TinyGo 镜像）真跑过的；`[未执行]` 是需要真库 / 容器 / 真工具链的腿，
 > 不在本机假装通过。
+>
+> **环境更正（2026-11-10）**：本机现在有真 PostgreSQL 16.15（`127.0.0.1:5432`），Docker 引擎仍不可用。
+> 上文「无 PG」是当时快照；真库腿的当前证据见 `docs/TASKS.md` SVC-STRAT-G4 与本文 §6.1。
 
 ## 0. 环境约定
 
@@ -261,7 +264,8 @@ go test ./cmd/assetservice ./internal/compilerclient -count=1 -v `
 - `error` 侧日志出现 `backfill` / `read build job state` / `report` 失败；
 - 运维确认编译进程已不存在（`Get-Process compiler` 无结果）但 job 未终态。
 
-收口 = 用内部端点把 job 打到 `failed`（幂等；已是终态会 409，看到 409 说明别人已收口）：
+收口 = 用内部端点把 job 打到 `failed`（**重复上报同一终态幂等 200**；把终态改回 `running` 等非法转移才
+`409 invalid_transition` —— 这条口径是 2026-11-10 真 PG 演练实测订正的，旧文写「已是终态会 409」不准确）：
 
 ```powershell
 $report = '{"state":"failed","error_code":"compile_failed","error":"manual closure: process exceeded -compiler-process-timeout, no terminal report"}'
@@ -277,4 +281,22 @@ curl.exe -s -X POST "http://127.0.0.1:18090/internal/strategies/<strategy_id>/bu
 - 404 `job_not_found`：job_id 或 strategy_id 不对（服务不跨策略枚举）。
 - 收口后重新 `POST .../build`：终态不复用，会排新 job；同键在排队中才复用。
 
-`[未执行]` 本机演练用的是内存 Store + 可回写服务，未在真 PG / 真卡死场景上执行。
+## 6.1 真 PG + 真停服演练（`[已执行 2026-11-10]`）
+
+环境：真 PostgreSQL 16.15（一次性库 `tellurion_strategy_drill`）+ `cmd/assetservice` 真二进制 `:18090` +
+替身编译进程（只回写 `running`，随后正常退出、永不回写终态；用来稳定复现「进程已消失但 job 未终态」）。
+四条腿与真实输出：
+
+1. **非零退出自动收口**：替身因不认识的位置参数 `exit status 2` ⇒ 服务补报 `failed / compile_failed`，
+   `GET .../builds/{job_id}` 立即 200 `failed`。
+2. **正常退出但无终态回写**：`POST .../build` **202**；轮询 `GET .../builds/{job_id}` → **200 `running`**；
+   停服务（回写面停机）并等替身退出（`Test-NetConnection 18090` = False、`Get-Process stubcompiler` 空）。
+3. **重启后仍 running**：同一 DSN 重启服务，`GET .../builds/{job_id}` 仍 **200 `running`**（说明卡在库里）。
+4. **人工收口**：内部端点 `failed / compile_failed` → **200**；重复 → **200 幂等**（同 `finished_at`）；
+   再报 `running` → **409 `invalid_transition`**；psql 直读
+   `strategy.strategy_build_jobs` → `failed | compile_failed | 2026-11-09 22:04:47`。
+
+清场：停服务、`DROP DATABASE … WITH (FORCE)`、临时目录全删；本仓 0 代码改动。
+**本腿不含真 TinyGo 编译**（Docker 引擎不可用）；`succeeded` 终态仍以 §4 的真工具链取证为准。
+
+`[已执行 2026-11-10]` 上一版「未执行」的那条已由本节替代。
