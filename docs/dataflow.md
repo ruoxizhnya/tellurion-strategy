@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: QT-41c 落地——build 端点 → internal/compilerclient 派发 cmd/compiler → 内部端点回写 queued/running/终态
+last-verified: 2026-11-11
+verified-by: 文档对齐审计——contracts pin 记 `v0.9.0`（`version_hash` 域标签自 `v0.5.0` 起收编，值不变）；主链路与编译支线复核无变化
 ---
 
 # Dataflow — tellurion-strategy
@@ -45,7 +45,7 @@ verified-by: QT-41c 落地——build 端点 → internal/compilerclient 派发 
    `carrier=builtin`、无 artifact；G 裁决：保留 core 的 init 注册，不做全量迁移）→ 开始监听。
    已存在同名定义只核对形状、不覆盖；同名不同 carrier/scope/entry = 启动失败。
 1. `POST /api/strategies` 建定义（`carrier` / `abi_version` / `scope` / `capability` / `entry`）
-2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256；六项输入与域 `tellurion.strategy_version_hash.v1` 取自 contracts `v0.5.0`，G5 ③）→ 登记 `strategy_versions`
+2. `PUT .../source` 上传源码 → `VersionHash`（canonical 化后 sha256；六项输入与域 `tellurion.strategy_version_hash.v1` 自 contracts `v0.5.0` 起收编，现 pin `v0.9.0`，G5 ③）→ 登记 `strategy_versions`
 3. 资产服务的 `POST .../build` → 先落 `strategy_build_jobs`（queued）→ 若 `asset.Compiler` 实现
    `BuildDispatcher`（QT-41c 的 `internal/compilerclient`）则派发独立编译进程并立刻 202；否则在进程内
    `runBuild`。`GET .../builds/{job_id}` 轮询：`queued → running → succeeded | failed`，终态带

@@ -1,7 +1,8 @@
 # tellurion-strategy
 
-> module: `tellurion-strategy` ｜ 状态：**🔶 G4 落地（2026-10-24）**——10+1 端点跑在 PG Store（启动迁移）上，两级缓存 / latest TTL /
-> build job 持久化 / 14 个内置策略登记 / 真 TinyGo 0.34.0 工具链已落；余 `storage=url`（非目标）与 `version_hash` 契约收编
+> module: `tellurion-strategy` ｜ 状态：**✅ 资产服务落地（2026-11-11 复核）**——13 个业务端点（10 条公开不挂闸 + `/promote` +
+> 2 条 `/internal/*` 挂 service 闸）+ 2 条探针跑在 PG Store（启动迁移）上；两级缓存 / latest TTL / build job 持久化 /
+> 14 个内置策略登记 / 真 TinyGo 0.34.0 工具链 / 跨进程编译闭环已落。`storage=url` 与 `carrier=external` 的 hash 语义是**非目标**
 
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
@@ -12,7 +13,7 @@
 | `cmd/assetservice/` | 资产服务进程入口（`127.0.0.1:8090`；DSN 非空走 PG 并在启动时迁移，否则 Memory） |
 | `cmd/compiler/` | 编译服务进程入口（读一批 job JSON → 队列限并发 / 重试 → 编译 → 内部端点登记 artifact；逐作业终态可检索） |
 | `internal/asset/` | 领域核心：模型 / `VersionHash` / `Verify` / `WasmImports` / Store 端口 + `Memory`/`PG` / DDL / `Service` / 两级缓存 / 内置登记 / so 符号校验 |
-| `internal/httpapi/` | 传输层：标准库 `net/http` 的 10 个公开端点 + 1 个内部登记端点 |
+| `internal/httpapi/` | 传输层：标准库 `net/http` 的 13 个业务端点（10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`）+ 2 条探针 |
 | `internal/compile/` | Compile 门：toolchain 执行器（`-target=wasm-unknown`、tinygo `-no-debug`、env 白名单、`toolchains.lock`、超时、日志截断） |
 | `internal/compilerjob/` | 编译作业管线：Queue（排队 / 限并发 / 重试，状态与 `strategy_build_jobs` 同词表）→ `artifact_hash` → 内部端点回填 |
 | `docs/` | 本仓文档：台账 / 边界 / 决策 / 归档 —— 从这里进：`docs/README.md` |

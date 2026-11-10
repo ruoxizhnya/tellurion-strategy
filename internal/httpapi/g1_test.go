@@ -143,7 +143,7 @@ func TestProtectedRoutesAcceptServiceToken(t *testing.T) {
 	}
 }
 
-// 其余 9 条公开端点在**启用鉴权**的进程里仍然不要求 token——它们靠端口隔离。
+// 其余 10 条公开端点在**启用鉴权**的进程里仍然不要求 token——它们靠端口隔离。
 // 一旦有人把其中任一条挪进策略表，这条会红。
 func TestOpenRoutesRemainUngated(t *testing.T) {
 	srv, _, _, _ := newAuthServer(t, nil)

@@ -6,23 +6,26 @@
 
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
-**状态**：🔶 G4 落地（2026-10-24）——`internal/asset`（Memory + PG Store、启动迁移、两级缓存、latest TTL、job 持久化、
-14 个内置策略登记、so 符号校验）+ `internal/httpapi`（10+2 端点）+ `internal/compile`（真 TinyGo 0.34.0 锁与 `-no-debug`）
+**状态**：✅ 资产服务落地（2026-11-11 复核）——`internal/asset`（Memory + PG Store、启动迁移、两级缓存、latest TTL、job 持久化、
+14 个内置策略登记、so 符号校验）+ `internal/httpapi`（13 个业务端点：10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`；另有 2 条探针）
++ `internal/compile`（真 TinyGo 0.34.0 锁与 `-no-debug`）
 + `internal/compilerjob` + `cmd/*` 已落地。G5（2026-10-24）补了编译 job 的**队列 / 重试 / 限并发**（`compilerjob.Queue`，
 状态词表与 `strategy_build_jobs` 同一套）。QT-41c（2026-10-25）收口了编译链路跨进程闭环：
 `POST .../build` → `internal/compilerclient` 派发 `cmd/compiler` → 内部端点回写 `queued → running → succeeded | failed`
 （失败带 `error_code`）；`-compiler-bin` 为空时 build 端点仍 fail-closed 503 `compile_unavailable`。
-余项见 `docs/TASKS.md`（`storage=url` 非目标、`version_hash` 域标签已随 contracts `v0.5.0` 收编）。
-**SVC-STRAT-G1（2026-11-07）**：引 `tellurion-kit v0.1.4`——`/promote` + 两条 `/internal/*` 挂 service-token
+余项：`storage=url` 与 `carrier=external` 的 hash 语义均为**非目标**（只留列 / fail-closed）；`version_hash` 域标签自 contracts `v0.5.0` 起已收编，本仓无本地定义。`docs/TASKS.md` 当前无开放项。
+**SVC-STRAT-G1（2026-11-07）**：引 `tellurion-kit`（引入时 `v0.1.4`，现 pin `v0.2.0`）——`/promote` + 两条 `/internal/*` 挂 service-token
 闸（`internal/httpapi/policy.go`，只认 `service`）；promote 要求 `X-Actor` 并落 `strategy.strategy_promotions`
 审计；新增公开 `/healthz` / `/readyz`；按身份令牌桶限流（探针豁免，鉴权先于限流）；版本列表分页；
 build 幂等键（同 `(strategy, version, toolchain)` 未终态作业复用 `job_id`）。
-**SVC-STRAT-G4（2026-11-07，🔶）**：编译链路七类失败语义成文（`docs/api-schema.md` §2.2）、重试边界（§3.1）、
+**SVC-STRAT-G4（2026-11-07 落地，✅ 2026-11-10）**：编译链路七类失败语义成文（`docs/api-schema.md` §2.2）、重试边界（§3.1）、
 运维手册 `docs/runbook.md`；`cmd/compiler` 子进程加显式硬上界 `-compiler-process-timeout`（默认 20m、最大 1h，
 走 `exec.CommandContext`），到点落 `failed + error_code=compile_timeout`，不留 `running`。
-真 PG 迁移重放 / 真 TinyGo 镜像 / 真回写停服演练未执行，故仍标 🔶（详见 `docs/TASKS.md` 该单施工记录）。
+三条腿已真跑：真 PG 迁移重放（`tellurion_strategy_test` 全绿，schema 指纹 `10f6ee39…2954`）、真 TinyGo 0.34.0 镜像
+（`TestCompile_RealTinyGoImage` PASS 8.61s）、真回写面停机 + 卡死 job 人工收口演练（真 PG + 真服务 `:18090`，腿 A–D 全过）。
 
-**今天的实现**：`core:pkg/strategy`（运行时 + 插件 + `SignalProvider`）+ `strategies` 表（定义）。本仓只收"资产"这一半，**运行时留在 core**。
+**今天的实现**：`core:pkg/strategy`（运行时 + 插件 + `SignalProvider`）；策略**定义**的真相源已归本仓
+（core `strategies` 表与资产注册腿于 2026-11-09 随 `SVC-CORE-STRAT-RETIRE` 退役）。本仓只收"资产"这一半，**运行时留在 core**。
 
 ## 2. 构建 / 测试（必须单仓可跑）
 
@@ -63,7 +66,7 @@ go test ./...
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| `github.com/ruoxizhnya/tellurion-contracts` | `v0.5.0`（2026-10-24 发版，非伪版本；G4 切 pin） | 实际使用 `engine` 子包（package 名仍是 `contracts`）：`StrategyRef` / `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵 / **编译·资产四哨兵**（`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`，本仓以同名别名消费，见 `internal/asset/errors.go`）；QT-22 起消费 `StrategyVersionInput` / `DomainStrategyVersionHash`（G5 ③ 已收编：`internal/asset/hash.go` 无本地定义，编码委托 `StrategyVersionInput.Hash()`；域字符串逐字节未变） |
+| `github.com/ruoxizhnya/tellurion-contracts` | `v0.9.0`（2026-11-11 随 `CT-06-ALIAS-EXIT` 从 `v0.5.0` 升；`v0.5.0` 是 2026-10-24 G4 切 pin 的版本） | 实际使用 `engine` 子包（package 名仍是 `contracts`）：`StrategyRef` / `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵 / **编译·资产四哨兵**（`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`，本仓以同名别名消费，见 `internal/asset/errors.go`）；QT-22 起消费 `StrategyVersionInput` / `DomainStrategyVersionHash`（G5 ③ 已收编：`internal/asset/hash.go` 无本地定义，编码委托 `StrategyVersionInput.Hash()`；域字符串逐字节未变）。本仓不引用 `contracts/market`，别名退役不影响本仓 |
 | `github.com/jackc/pgx/v5` | `v5.7.3` | **生产 PG `Store`**（`internal/asset/pgstore.go`）与连接池；版本与 core / kit / data 仓一致。仅存储层使用，不把 `pgx` 类型泄进领域模型 |
 | `github.com/ruoxizhnya/tellurion-kit` | `v0.2.0`（2026-11-07 引入 `v0.1.4`，G1；2026-11-10 随 kit `KT-13` 升） | `auth` + `auth/httpadapter`：service-token 校验、角色 any-of、`RouteKey`、启动闸 `DecideStartup`。只在 `internal/httpapi` 与 `cmd/assetservice` 使用，不把 kit 类型泄进 `internal/asset` 领域模型 |
 | `github.com/stretchr/testify` | `v1.11.1` | **仅测试**断言（与 contracts 仓同版本）；随 QT-41/41b 测试引入，2026-10-23 补登记 |

@@ -1,29 +1,29 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编译进程装配（wire code 复用，无新增）
+last-verified: 2026-11-11
+verified-by: 文档对齐审计——端点数校准（13 业务端点 = 10 公开不挂闸 + `/promote` + 2 `/internal/*`，另 2 探针）、kit pin 记 `v0.2.0`、contracts pin 升 `v0.9.0`、promote 调用方按 ADR-0004 改为 agent/操作者直连、剩余项归为非目标
 ---
 
 # API Schema — tellurion-strategy
 
-> **实现状态（2026-10-25）**：10 个公开端点 + 2 个内部端点（artifact 登记 / build job 状态回写）由
-> `internal/httpapi` 落地，语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。
+> **实现状态（2026-11-11 复核）**：13 个业务端点——10 条公开不挂鉴权 + 3 条受保护（`/promote` + 2 条 `/internal/*`）
+> ——由 `internal/httpapi` 落地，另有 2 条公开探针；语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。
 > 存储有 `Memory`（测试）与 PG（生产，启动执行迁移）；两级缓存、latest TTL、build job 持久化、
 > 14 个内置策略登记均已落地。
 > **QT-41c（2026-10-25）**：`cmd/assetservice` 用 `-compiler-bin` 装配外部编译进程——build 端点落 queued 行后
 > 经 `internal/compilerclient` 派发 `cmd/compiler`，编译进程经内部端点回写 `running` / 终态；
 > `-compiler-bin` 为空则不装配，build 端点仍 fail-closed 503 `compile_unavailable`。
-> **SVC-STRAT-G1（2026-11-07）**：引 `tellurion-kit v0.1.4`，`/promote` + 两条 `/internal/*` 挂鉴权闸
+> **SVC-STRAT-G1（2026-11-07）**：引 `tellurion-kit`（引入时 `v0.1.4`，现 pin `v0.2.0`），`/promote` + 两条 `/internal/*` 挂鉴权闸
 > （`policy.go`，只认 `service` 角色）；promote 要求受信 `X-Actor` 并落 `strategy.strategy_promotions` 审计；
 > 新增公开 `/healthz` 与 `/readyz`；按身份令牌桶限流（50 rps / 突发 200）；版本列表支持 `limit` / `offset`；
 > build 幂等键落实现。错误码闭合表见 §2.1，逐端点版本与错误码见 §7。
-> **剩余未落项**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义单独立文、core 侧 Mount 门。
-> 逐条登记在 `docs/TASKS.md` QT-41/41b/41c 的施工记录里。
-> `version_hash` 的输入形状与域标签已收编 contracts `v0.5.0`（G5 ③，2026-10-24）：`PUT .../source` 的 wire 形状与 hash 值不变。
+> **非目标（不是欠账）**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义（不单独立文）、
+> core 侧 Mount 门（消费侧改造，归 `tellurion` 仓）。`docs/TASKS.md` 当前无开放项。
+> `version_hash` 的输入形状与域标签自 contracts `v0.5.0` 起收编（G5 ③，2026-10-24），现 pin `v0.9.0`：`PUT .../source` 的 wire 形状与 hash 值不变。
 >
 > 本文件是**目标契约 + 现状**：已实现的行以代码为准，未实现的行是欠账，不允许把欠账当现状描述。
 
-> **契约地位**：HTTP。**写侧 7 端点给作者/AI/CI，读侧 2 端点给引擎** —— 引擎只用那两个，其余端点它不该碰。
+> **契约地位**：HTTP。**写侧给作者/AI/CI，读侧 3 端点给引擎/回测入口** —— 引擎只用 `resolve` 与 `artifact`，`promotions` 供审批闸门，其余端点它不该碰。
 > 本文件是**本仓对外接口的唯一真相源**。代码与它不一致时，先判断谁错：契约错 → 改本文 + 立 ADR；实现错 → 改代码。
 > 跨仓消费方（core / agent / ui / 其他服务）按本文件编码，**不读本仓实现**。
 
@@ -83,12 +83,12 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 
 - 凭证：`Authorization: Bearer <access token>`（service token = kit `IssueServiceToken`，`role=service`）。
   无 token / 坏 token / 用 refresh token → 401 `unauthenticated`；角色不对 → 403 `forbidden`。
-- 其余 9 条公开端点**不挂鉴权**，靠端口隔离（默认 `127.0.0.1:8090`，只在集群内/回环）。
+- 其余 10 条公开端点**不挂鉴权**，靠端口隔离（默认 `127.0.0.1:8090`，只在集群内/回环）。
   启动闸（kit `DecideStartup`）：无 `JWT_SECRET` 且绑定非回环、又未声明 `AUTH_INSECURE_EXPOSURE=loopback-published`
   ⇒ **拒绝启动**，不会出现「漏配 secret 就全开」的进程。
 - 限流：进程内按身份分桶（令牌桶 50 rps / 突发 200；未鉴权端点共用一个 `open-access` 桶）。
   超限 → 429 `rate_limited` + `Retry-After: 1`。**鉴权先于限流**：401 / 403 不会被 429 顶替。
-- promote 额外要求受信头 `X-Actor`（core 鉴权后从 JWT `sub` 转发）：缺失 → 400 `actor_required`，
+- promote 额外要求受信头 `X-Actor`（由 agent / 操作者**直连本仓**时携带；ADR-0004 裁决 A——core 不做 promote 代理）：缺失 → 400 `actor_required`，
   且**不写审计行**。成功 promote 追加一行 `strategy.strategy_promotions`（actor / decided_at / outcome）。
   审计写失败 → 500 `audit_failed`（promote 可能已生效，重试安全，但不会静默丢审计）。
 
@@ -118,7 +118,7 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 |---|---|---|
 | 受保护路由无 token / 坏 token / refresh token | 401 + `unauthenticated` | 换 access token 重试 |
 | 受保护路由角色不是 `service` | 403 + `forbidden` | 拒绝（不是权限不足的模糊化，本仓只有一档） |
-| promote 缺 `X-Actor`（受信头） | 400 + `actor_required` | 由 core 补可信身份后重试；本仓不猜审批人 |
+| promote 缺 `X-Actor`（受信头） | 400 + `actor_required` | 由 agent / 操作者补可信身份后重试（core 不代理 promote）；本仓不猜审批人 |
 | promote 审计写失败 | 500 + `audit_failed` | 查库确认 promote 是否已生效；重试只会得到 409，**不会补写审计** |
 | 超过令牌桶 | 429 + `rate_limited`（带 `Retry-After`） | 按 `Retry-After` 退避 |
 | 受保护路由未装配鉴权闸 | 503 + `auth_unavailable` | 部署缺陷，拒绝流量 |
@@ -270,7 +270,7 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 ### 4.1 版本化与兼容（G1 ⑤）
 
 - **URL 不带版本号**：`/api/strategies...` 与 `/internal/strategies...` 是冻结前缀，**不存在** `/v2` 并行面。
-  版本身份由「本仓 tag + 依赖的 contracts 版本」共同钉住（今天 contracts `v0.5.0` / kit `v0.1.4`）。
+  版本身份由「本仓 tag + 依赖的 contracts 版本」共同钉住（今天 contracts `v0.9.0` / kit `v0.2.0`）。
 - **加字段 = MINOR**：新增响应字段、新增可选请求字段、新增 wire code、新增端点，都是兼容变更。
   调用方必须忽略未知字段（本仓的解码器也是 `DisallowUnknownFields`，所以**请求侧加字段对旧服务是硬失败**——
   加请求字段必须在同一次发布里让服务先能接收）。

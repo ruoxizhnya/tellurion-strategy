@@ -53,7 +53,7 @@ var (
 	errAuditUnavailable = errors.New("promotion audit is not configured")
 )
 
-// API 是 10 个公开端点 + 2 个内部端点 + 2 个探针的路由器。
+// API 是 13 个业务端点（10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`）+ 2 个探针的路由器。
 type API struct {
 	svc          *asset.Service
 	mux          *http.ServeMux

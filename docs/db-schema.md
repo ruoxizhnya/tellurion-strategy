@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: QT-41c 落地——`strategy_build_jobs` 追加 `error_code`（可重入 ALTER），PG/Memory 读写同步
+last-verified: 2026-11-11
+verified-by: 文档对齐审计——K5 对照表按 core `strategies` 表 2026-11-09 退役（SVC-CORE-STRAT-RETIRE）改为历史对照；contracts pin 升 `v0.9.0`；`quant.external_signals` 仍属 core（Migration 048 在世）
 ---
 
 # DB Schema — tellurion-strategy
@@ -35,35 +35,37 @@ verified-by: QT-41c 落地——`strategy_build_jobs` 追加 `error_code`（可�
   **不设外键**——策略/版本被删也不能连带抹掉审计；只追加，不 UPDATE / DELETE。
   写者只有 `internal/asset.PG.RecordPromotion`（HTTP 层在 promote 成功后调用，缺 `X-Actor` 时不写）。
 - `version_hash` 由**源码 canonical 化后 sha256**派生，内容改必须改 hash。
-  输入六项与域标签由 contracts `v0.5.0` 提供（`StrategyVersionInput` / `DomainStrategyVersionHash`，G5 ③ 收编），
+  输入六项与域标签由 contracts `v0.5.0` 起提供（`StrategyVersionInput` / `DomainStrategyVersionHash`，G5 ③ 收编；现 pin `v0.9.0`），
   本仓不再定义第二份；域字符串逐字节未变，**历史 `version_hash` 全部仍然有效**。
 
 ### 1.1 K5 对照表：`strategy.strategy_definitions` vs core `strategies`（SVC-STRAT-G2 ③）
 
 > 这张表是 K5 的答卷，也是 `tellurion:SVC-CORE-STRAT-RETIRE` 的前置。**逐列/逐语义**对照，
 > 出处写到行；结论列写「已对齐 / 待对齐 / 本仓不承担」，不许用「大体一致」。
-> **双 owner 事实**：同一逻辑概念（策略定义）今天有**两个写者**——core 写 `quant.strategies`
-> （`tellurion:pkg/storage/strategies.go`），本仓写 `strategy.strategy_definitions`（`internal/asset/pgstore.go`）。
-> 在 core 停写前，G2 的「它的表只有它写」不可能 ✅；本表只如实登记。
+> **已收口（2026-11-09）**：同一逻辑概念（策略定义）曾在 core `quant.strategies`
+> （`tellurion:pkg/storage/strategies.go`）与本仓 `strategy.strategy_definitions`（`internal/asset/pgstore.go`）各有一个写者。
+> core 的 `strategies` 表与资产注册腿已于 2026-11-09 随 `SVC-CORE-STRAT-RETIRE` 退役（DDL、`pkg/storage/strategies.go`、
+> `pkg/strategy/db.go` 全删，`internal/repoguard/strategy_definitions_retired_test.go` 反向护栏在位）——本仓是**唯一写者**。
+> 下表保留退役前的逐列对照，作为迁移与口径核对的历史依据。
 
-| 维度 | core `strategies`（今天） | 本仓 `strategy.strategy_definitions`（目标态） | 出处 | 结论 |
+| 维度 | core `strategies`（2026-11-09 退役前） | 本仓 `strategy.strategy_definitions`（目标态） | 出处 | 结论 |
 |---|---|---|---|---|
-| schema / 表名 | `public.strategies`（Migration 011 未带 schema，依赖 search_path） | `strategy.strategy_definitions` | `tellurion:docs/migrations/011_add_strategies_table.sql:4`；`internal/asset/ddl.go:27` | 待对齐（退役时改名/搬 schema） |
+| schema / 表名 | `public.strategies`（Migration 011 未带 schema，依赖 search_path） | `strategy.strategy_definitions` | `tellurion:docs/migrations/011_add_strategies_table.sql:4`；`internal/asset/ddl.go:27` | 已收口（core 表退役，本仓唯一写者） |
 | 主键与业务键 | `id SERIAL` + `strategy_id VARCHAR(50) UNIQUE` | `id TEXT PRIMARY KEY`（就是 strategy_id） | `tellurion:docs/migrations/011_add_strategies_table.sql:5-6`；`internal/asset/ddl.go:28` | 已对齐（业务键同义） |
-| 名称/描述 | `name` / `description` | **无**（入口是 `entry`；名称属展示层） | `tellurion:docs/migrations/011_add_strategies_table.sql:7-8`；`internal/asset/ddl.go:29-38` | 待对齐（core 消费方要名称时需另给映射） |
+| 名称/描述 | `name` / `description` | **无**（入口是 `entry`；名称属展示层） | `tellurion:docs/migrations/011_add_strategies_table.sql:7-8`；`internal/asset/ddl.go:29-38` | 已收口（core 表退役；名称属展示层，本仓不承担） |
 | 参数 | `params JSONB NOT NULL DEFAULT '{}'` | `capability JSONB`（能力声明，不是运行参数） | `tellurion:docs/migrations/011_add_strategies_table.sql:10`；`internal/asset/ddl.go:32` | 语义不同（不迁移） |
-| 类型 | `strategy_type VARCHAR(30)` | **无**；由 `carrier`（builtin/dsl/wasm/so/external）+ `abi_version` 表达 | `tellurion:docs/migrations/011_add_strategies_table.sql:9`；`internal/asset/ddl.go:29-30` | 待对齐（映射表随退役单落） |
+| 类型 | `strategy_type VARCHAR(30)` | **无**；由 `carrier`（builtin/dsl/wasm/so/external）+ `abi_version` 表达 | `tellurion:docs/migrations/011_add_strategies_table.sql:9`；`internal/asset/ddl.go:29-30` | 已收口（`carrier` / `abi_version` 表达；core 侧概念随表退役） |
 | 启用/停用 | `is_active BOOLEAN`，删除=**软删**（`UPDATE ... SET is_active=FALSE`，行仍在） | **无删除**：定义行只增不删；「生效」由 `active_version_hash` / `active_artifact_hash` 表达；下线走 `deprecate`（版本级） | `tellurion:pkg/storage/strategies.go:106-116`；`internal/asset/ddl.go:34-38`；`internal/asset/service.go` 的 `Deprecate` | 语义不同（行消失 vs 版本下线）——**K5 的核心差异** |
-| 版本概念 | **无**：一条 `strategy_id` 一行，参数原地覆盖（`ON CONFLICT DO UPDATE`） | 版本链：`strategy_versions` 按 `(strategy_id, version_hash)` 多行；`active_version_hash` 指向当前 | `tellurion:pkg/storage/strategies.go:12-31`；`internal/asset/ddl.go:41-45` | 待对齐（退役单的迁移算法） |
+| 版本概念 | **无**：一条 `strategy_id` 一行，参数原地覆盖（`ON CONFLICT DO UPDATE`） | 版本链：`strategy_versions` 按 `(strategy_id, version_hash)` 多行；`active_version_hash` 指向当前 | `tellurion:pkg/storage/strategies.go:12-31`（已删）；`internal/asset/ddl.go:41-45` | 已收口（core 无版本概念且表已退役，无迁移对象） |
 | 内容寻址 | **无** `version_hash` / `artifact_hash` | `version_hash` = 源码 canonical sha256（域 + 六输入由 contracts 定义）；`artifact_hash` = 字节 sha256 | `internal/asset/hash.go`；`docs/api-schema.md` §2 | 本仓新增能力（core 无对应列） |
-| 内置策略 | `SeedStrategies` 播种 **3 条**（momentum / value / quality） | 启动登记 **14 条** `carrier=builtin`（无 artifact，`entry`=策略名） | `tellurion:pkg/storage/strategies.go:118-160`；`internal/asset/builtin.go` | **数量不一致**（3 vs 14）——退役前必须对清，见下 |
-| 写者（今天） | `SaveStrategyConfig`（upsert）/ `DeleteStrategyConfig`（软删）/ `SeedStrategies`（启动种子）；另 `cmd/analysis/setup.go:336` 调 Seed | 只有本仓：`internal/asset.PG` 的 `CreateDefinition` / `Promote` / `Deprecate` / 内置登记；**零**写 `quant.strategies` | `tellurion:pkg/storage/strategies.go:12,106,119`；`internal/asset/pgstore.go:57,393,420` | 双 owner（定义真相源仍在 core） |
+| 内置策略 | `SeedStrategies` 播种 **3 条**（momentum / value / quality） | 启动登记 **14 条** `carrier=builtin`（无 artifact，`entry`=策略名） | `tellurion:pkg/storage/strategies.go`（已删）；`internal/asset/builtin.go` | 历史差异（3 vs 14）已随退役收口，见下 |
+| 写者（今天） | `SaveStrategyConfig`（upsert）/ `DeleteStrategyConfig`（软删）/ `SeedStrategies`（启动种子）；另 `cmd/analysis/setup.go:336` 调 Seed | 只有本仓：`internal/asset.PG` 的 `CreateDefinition` / `Promote` / `Deprecate` / 内置登记；**零**写 `quant.strategies` | `tellurion:pkg/storage/strategies.go`（已删）；`internal/asset/pgstore.go:57,393,420` | 已收口（core 已删表停写，本仓唯一写者） |
 | 时间戳 | `created_at` / `updated_at`（`NOW()`，upsert 时刷新 `updated_at`） | `created_at` / `updated_at`（`now()`；本仓不改写 `created_at`） | `tellurion:docs/migrations/011_add_strategies_table.sql:12-13`；`internal/asset/ddl.go:36-37` | 已对齐 |
 
-**内置策略 3 vs 14 的处置**：core 只播种 3 条，本仓登记 14 条（`internal/asset/builtin.go` 的名单来自
-core 引擎 `SignalGenerator` 的实际实现集）。这不是本仓擅自扩表——本仓登记的是**可解析的资产**；
-core `strategies` 里的 3 条是**数据库里的配置行**。退役单必须逐条判定「14 条里哪些需要在 core 有配置行」，
-不许按数量直接迁移。该判定归 `tellurion:SVC-CORE-STRAT-RETIRE`，本仓只提供两侧名单与出处。
+**内置策略 3 vs 14 的处置（已收口，2026-11-09）**：core 不再为任何内置策略保留配置行——`SeedStrategies` 播种的
+momentum / value / quality 本就属于 core 引擎 registry 的内置集，DB 行只是可被覆盖的副本；运行时参数 = registry 默认值 +
+QT-20 的 run 级参数投递。本仓登记 14 条 `carrier=builtin` 是**可解析的资产**面，不是对 core 配置行的迁移。
+判定与证据见 `tellurion:docs/archive/tasks-archive-2026-11.md` 的 `SVC-CORE-STRAT-RETIRE`「内置策略 3 与 14 的判定」。
 
 ## 2. 只读输入（不属于本仓，禁止写入）
 
@@ -100,6 +102,8 @@ core `strategies` 里的 3 条是**数据库里的配置行**。退役单必须�
   已落地的建表语句**一字未改**，空库 / 既有库都能重入执行。
 - **2026-11-07（SVC-STRAT-G1）**：新增 `strategy_promotions`（append-only 审计），迁移是数组末尾的
   `CREATE TABLE IF NOT EXISTS strategy.strategy_promotions (...)`；无外键、无回填，空库 / 既有库都可重入。
+- **2026-11-09（SVC-CORE-STRAT-RETIRE）**：core 侧 Migration 011 的 `strategies` 建表与两条索引已退役（不在 core
+  `migrationStatements()` 里）；`docs/migrations/011_add_strategies_table.sql` 仅作历史镜像保留、不执行。本仓 DDL 不受影响。
 - 每条必须可重入（`IF NOT EXISTS` / `IF EXISTS`），且能在空库上一次跑完。
 - 跨 schema 取数只走**只读视图或 API**；出现 `join` 别人的表就是边界腐化的第一信号。
 - 结构变更的同步义务：本文件 + `docs/ARCHITECTURE.md` 的「数据归属」节必须同一次提交里更新。

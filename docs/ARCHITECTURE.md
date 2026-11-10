@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-10-25
-verified-by: QT-41c 跨进程编译闭环——新增 `internal/compilerclient` + `cmd/assetservice` 外部编译器装配 + 内部 build job 状态回写端点（依赖方向仍单向）
+last-verified: 2026-11-11
+verified-by: 文档对齐审计——端点计数校准（13 业务端点 + 2 探针）、contracts pin 升 `v0.9.0`、kit 依赖陈述纠正、剩余项归非目标、G4 收口后状态同步
 ---
 
 # 架构 — tellurion-strategy
@@ -35,7 +35,7 @@ verified-by: QT-41c 跨进程编译闭环——新增 `internal/compilerclient` 
 | 解析（resolve） | ref → 元数据；latest 结果按 TTL 缓存 | 不缓存字节码给引擎（引擎自己缓存） |
 | 缓存（cache） | artifact 字节 L1 内存 LRU + L2 本地盘内容寻址；latest TTL 300s | 不改写 artifact / 不参与状态机 |
 
-## 3.1 包布局（现状，2026-10-25）
+## 3.1 包布局（现状，2026-11-11）
 
 ```
 cmd/
@@ -52,7 +52,7 @@ internal/
                      / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
                      / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
                      / elf.go（carrier=so 的导出符号表校验：entry 必须是已定义 GLOBAL/WEAK 符号）
-  httpapi/           传输层：标准库 http.ServeMux，10 个公开端点 + 2 个内部端点（artifact 登记 / job 状态回写）
+  httpapi/           传输层：标准库 http.ServeMux，13 个业务端点（10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`）
                      + 2 个公开探针（/healthz /readyz）；policy.go 只给 /promote 与两条 /internal/* 挂
                      kit service-token 闸；auth.go 鉴权先于限流；limit.go 按身份令牌桶
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、tinygo 强制 -no-debug、env 白名单、
@@ -76,8 +76,8 @@ doc.go               仓级包文档（无代码）
 **事务边界**：`promote` / `deprecate` 的「artifact 状态 + definition 生效指针」在 Store 内单事务提交
 （PG）或单锁内完成（Memory）；HTTP/Service 层不再分两步写。
 
-**未落**：`storage=url` 分支（只保留列）、`carrier=external` 的 hash 语义单独立文。清单见 `docs/TASKS.md`。
-（`version_hash` 的输入形状与域标签已于 G5 ③ 收编 contracts `v0.5.0`；`internal/asset/hash.go` 不再持有本地定义。）
+**非目标**：`storage=url` 分支（只保留列）、`carrier=external` 的 hash 语义单独立文；两者不是欠账，`docs/TASKS.md` 当前无开放项。
+（`version_hash` 的输入形状与域标签已于 G5 ③ 收编 contracts `v0.5.0`，现 pin `v0.9.0`；`internal/asset/hash.go` 不再持有本地定义。）
 
 ## 4. 三份契约（功能的边界就在这三份文件里）
 
@@ -101,12 +101,13 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
 
 - **跨进程编译不引入反向依赖**：`cmd/assetservice` 只通过 `internal/compilerclient` 启动 `cmd/compiler`；
   编译进程只经 HTTP 内部端点回写，不直连 DB、不 import 资产服务实现。
-- **contracts `v0.4.0` 是已发的 tag**（2026-10-24，不是伪版本）。`engine` 子包（package 名仍是 `contracts`）提供 `StrategyRef` /
+- **contracts 现 pin `v0.9.0`**（2026-11-11，随 `CT-06-ALIAS-EXIT` 从 `v0.5.0` 升；`v0.4.0` 是 2026-10-24 首次发布这些符号的 tag，非伪版本）。`engine` 子包（package 名仍是 `contracts`）提供 `StrategyRef` /
   `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵，以及 QT-41b ④ 的编译·资产四哨兵
   （`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`）—— 本仓**不复制**这些符号，
-  四条只留同名别名（`internal/asset/errors.go`），HTTP 错误码表不变。
+  四条只留同名别名（`internal/asset/errors.go`），HTTP 错误码表不变。本仓不使用 `contracts/market`，别名退役不影响本仓。
 - **`pgx/v5` 只出现在存储实现**（`internal/asset/pgstore.go`）；领域模型与 HTTP 层不出现 `pgx` 类型。
-- **不依赖 `tellurion-kit`**：HTTP / 日志用标准库（`net/http`、`log/slog`）；引入 kit 前要先在 `AGENTS.md` §4 登记。
+- **`tellurion-kit` 只在传输层与进程入口使用**：`internal/httpapi`（service-token 校验、启动闸、限流）+ `cmd/assetservice`；
+  kit 类型不泄进 `internal/asset` 领域模型。日志与 HTTP 其余部分仍用标准库（`net/http`、`log/slog`）。
 - 禁止 `replace` 指向仓外路径、禁止提交 `go.work` —— 单仓必须能独立构建。
 
 ## 6. 关键决策
@@ -128,4 +129,4 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
 |---|---|---|
 | 腿 1 | DSL 资产化（零工具链）：`carrier=dsl` + `version_hash` + `strategy_ref` | ✅ `version_hash` / `strategy_ref` 解析已落地（2026-10-23） |
 | 腿 2 | WASM：工具链 + PoC → go/no-go | ✅ 编译执行器 + 真 TinyGo 0.34.0 镜像已接、产物可复现（QT-41b）；跨进程装配与状态回写已收口（QT-41c） |
-| X2 | 本仓完整落地（写 7 + 读 2 端点） | 🔶 10 个公开端点 + 2 个内部端点（artifact 登记 / build job 状态回写）已实装；PG / 迁移 / 缓存 / 内置登记已落；余 `storage=url`、`carrier=external` 的 hash 语义单独立文 |
+| X2 | 本仓完整落地（写 7 + 读 2 端点） | ✅ 13 个业务端点（10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`）+ 2 探针已实装；PG / 迁移 / 缓存 / 内置登记 / 跨进程编译闭环已落。`storage=url`、`carrier=external` hash 语义为**非目标**（2026-11-11 复核） |
