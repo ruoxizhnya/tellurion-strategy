@@ -137,7 +137,7 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 | 编译失败 | 409 + `compile_failed` | 拒绝 |
 | 源码 / 产物超限 | 413 + `payload_too_large` | 拒绝 |
 | 编译服务未配置 | 503 + `compile_unavailable` | 拒绝 |
-| 载体不支持 | 400 + `unsupported_carrier` | 拒绝 |
+| 载体不支持（含对 builtin / dsl / external 调 promote） | 400 + `unsupported_carrier` | 拒绝；无 artifact 载体没有可审批的产物（2026-11-10 裁决） |
 | `abi_version` 不在 `on_bar/1\|2` | 400 + `invalid_abi_version` | 拒绝 |
 | `scope` 非法 / v1 声明 market | 400 + `invalid_scope` | 拒绝 |
 | 源码为空 | 400 + `source_required` | 拒绝 |

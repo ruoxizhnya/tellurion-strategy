@@ -558,7 +558,7 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 	builtinID := createDefinition(t, srv, map[string]any{
 		"carrier": "builtin", "scope": "symbol", "entry": "OnBar",
 	})
-	putSource(t, srv, builtinID, "package strategy")
+	builtinVersion := putSource(t, srv, builtinID, "package strategy")
 
 	validRef := "other@" + strings.Repeat("a", 64)
 
@@ -585,6 +585,8 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 			"/api/strategies/" + wasmID + "/versions/" + wasmVersion + "/validate", nil, 404, "artifact_not_found"},
 		{"promote without artifact", http.MethodPost,
 			"/api/strategies/" + wasmID + "/versions/" + wasmVersion + "/promote", nil, 404, "artifact_not_found"},
+		{"promote artifactless carrier", http.MethodPost,
+			"/api/strategies/" + builtinID + "/versions/" + builtinVersion + "/promote", nil, 400, "unsupported_carrier"},
 		{"download without artifact", http.MethodGet,
 			"/api/strategies/" + wasmID + "/versions/" + wasmVersion + "/artifact", nil, 404, "artifact_not_found"},
 		{"unknown field", http.MethodPost, "/api/strategies",

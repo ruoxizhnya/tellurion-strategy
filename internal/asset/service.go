@@ -477,6 +477,19 @@ func (s *Service) ValidateVersion(ctx context.Context, id, versionHash, toolchai
 // 状态与生效指针由 Store 在**一个事务**里写（PG）或一把锁内写（Memory）；
 // 两步分开写会留下「artifact 已 promoted、latest 还指旧字节」且无法自愈的状态。
 func (s *Service) Promote(ctx context.Context, id, versionHash, toolchain string) (Artifact, error) {
+	def, err := s.store.GetDefinition(ctx, id)
+	if err != nil {
+		return Artifact{}, err
+	}
+	// 无 artifact 载体（builtin / dsl / external）**不开放**版本级 promote
+	// （2026-11-10 裁决，待主任追认）：审批态是产物级状态机，没有字节码就没有
+	// 「被批准的可执行资产」；若给这三类载体开版本级放行，resolve 只能回一个空
+	// artifact_hash，回测入口的 promoted 判据会变成假绿灯。AI 产物按 QT-32 ②
+	// 一律经 QT-41b 编译成 wasm 后走本端点，因此这里 fail-closed 且点名载体。
+	if !def.Carrier.NeedsArtifact() {
+		return Artifact{}, fmt.Errorf("%w: carrier %s produces no artifact; promote is defined for wasm|so",
+			ErrUnsupportedCarrier, def.Carrier)
+	}
 	a, err := s.pickArtifact(ctx, id, versionHash, toolchain)
 	if err != nil {
 		return Artifact{}, err

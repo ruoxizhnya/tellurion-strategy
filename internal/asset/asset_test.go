@@ -864,6 +864,37 @@ func TestService_ValidateRejectsAndPromoteRequiresValidated(t *testing.T) {
 	}
 }
 
+// TestService_PromoteRejectsArtifactlessCarrier 固化「无 artifact 载体不开放
+// 版本级 promote」的裁决（2026-11-10）：builtin / dsl / external 没有本仓产出
+// 的字节码，promote 必须 fail-closed 且点名载体，不许留下「已批准但没有资产」
+// 的放行位。AI 产物按 QT-32 ② 一律编译成 wasm 后走同一端点。
+func TestService_PromoteRejectsArtifactlessCarrier(t *testing.T) {
+	ctx := context.Background()
+	for _, carrier := range []Carrier{CarrierDSL, CarrierBuiltin, CarrierExternal} {
+		t.Run(string(carrier), func(t *testing.T) {
+			svc, store := newHarness(t, nil)
+			def, err := svc.CreateDefinition(ctx, CreateDefinitionRequest{
+				Carrier: carrier, Scope: contracts.ScopeSymbol, Entry: "Strategy",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := mustPutSource(t, svc, def.ID, "package strategy")
+			if _, err := svc.Promote(ctx, def.ID, v.VersionHash, ""); !errors.Is(err, ErrUnsupportedCarrier) {
+				t.Fatalf("Promote(%s) = %v, want ErrUnsupportedCarrier", carrier, err)
+			}
+			got, err := store.GetDefinition(ctx, def.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ActiveVersionHash != "" || got.ActiveArtifactHash != "" {
+				t.Fatalf("rejected promote moved active pointers: %q/%q",
+					got.ActiveVersionHash, got.ActiveArtifactHash)
+			}
+		})
+	}
+}
+
 func TestService_MultipleToolchainsRequireExplicitChoice(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newHarness(t, nil)
