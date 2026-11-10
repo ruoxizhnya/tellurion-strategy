@@ -237,6 +237,10 @@ type ResolveResult struct {
 	MemoryLimit  int64                   `json:"memory_limit_bytes"`
 	Imports      []string                `json:"imports"`
 	Toolchain    string                  `json:"toolchain"`
+	// Status 是解析到的那一行 artifact 的审批态（built/validated/promoted/
+	// rejected/deprecated）。它是**版本级闸门**的判据：调用方（core 回测入口）
+	// 必须在 status != promoted 时 fail-closed，不得拿 latest 的指针冒充审批。
+	Status Status `json:"status"`
 }
 
 // isLowerHex64 判断是否是 64 位小写 hex（与 contracts.ParseStrategyRef 同口径）。

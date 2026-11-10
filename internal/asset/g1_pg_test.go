@@ -131,6 +131,64 @@ func TestPG_ActiveJobPicksEarliestOpenJob(t *testing.T) {
 	}
 }
 
+func TestPG_ListPromotionsReadsBackWhatWasWritten(t *testing.T) {
+	pg := openTestPG(t)
+	ctx := context.Background()
+	if _, err := pg.pool.Exec(ctx, `DELETE FROM strategy.strategy_promotions`); err != nil {
+		t.Fatalf("clean promotions: %v", err)
+	}
+	base := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	// 写入侧允许非 64-hex 的 hash（老数据/测试语料），读面必须原样读回。
+	for i, outcome := range []string{"promoted", "rejected"} {
+		ev := PromotionEvent{
+			StrategyID: "strat-read", VersionHash: "vh-read-" + outcome, ArtifactHash: "ah-read",
+			Actor: "alice", Outcome: outcome, DecidedAt: base.Add(time.Duration(i) * time.Minute),
+		}
+		if err := pg.RecordPromotion(ctx, ev); err != nil {
+			t.Fatalf("RecordPromotion(%s): %v", outcome, err)
+		}
+	}
+
+	all, err := pg.ListPromotions(ctx, PromotionFilter{StrategyID: "strat-read"})
+	if err != nil {
+		t.Fatalf("ListPromotions: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("rows = %d, want 2 (%+v)", len(all), all)
+	}
+	// 新的在前（append-only 按插入序倒排）。
+	if all[0].Outcome != "rejected" || all[1].Outcome != "promoted" {
+		t.Fatalf("order = [%s, %s], want [rejected, promoted]", all[0].Outcome, all[1].Outcome)
+	}
+	if all[0].Actor != "alice" || all[0].DecidedAt.IsZero() {
+		t.Fatalf("row = %+v, want actor alice + non-zero decided_at", all[0])
+	}
+
+	one, err := pg.ListPromotions(ctx, PromotionFilter{StrategyID: "strat-read", VersionHash: "vh-read-promoted"})
+	if err != nil {
+		t.Fatalf("ListPromotions(filter): %v", err)
+	}
+	if len(one) != 1 || one[0].Outcome != "promoted" {
+		t.Fatalf("filtered = %+v, want one promoted row", one)
+	}
+
+	paged, err := pg.ListPromotions(ctx, PromotionFilter{StrategyID: "strat-read", Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("ListPromotions(page): %v", err)
+	}
+	if len(paged) != 1 || paged[0].Outcome != "promoted" {
+		t.Fatalf("paged = %+v, want [promoted]", paged)
+	}
+
+	empty, err := pg.ListPromotions(ctx, PromotionFilter{StrategyID: "strat-missing"})
+	if err != nil {
+		t.Fatalf("ListPromotions(empty): %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("missing strategy = %#v, want empty non-nil slice", empty)
+	}
+}
+
 func promotionCount(t *testing.T, pg *PG) int {
 	t.Helper()
 	var n int

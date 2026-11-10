@@ -1121,3 +1121,70 @@ func TestService_CreateDefinitionFailsClosedOnInvalidShape(t *testing.T) {
 		t.Fatalf("rejected definition was stored: %v", err)
 	}
 }
+
+func TestMemoryPromotionLog_ListPromotionsFiltersOrdersAndPages(t *testing.T) {
+	ctx := context.Background()
+	log := NewMemoryPromotionLog()
+	base := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	v1 := strings.Repeat("a", 64)
+	v2 := strings.Repeat("b", 64)
+	rows := []PromotionEvent{
+		{StrategyID: "st_1", VersionHash: v1, ArtifactHash: strings.Repeat("1", 64), Actor: "alice", Outcome: "promoted", DecidedAt: base},
+		{StrategyID: "st_2", VersionHash: v1, ArtifactHash: strings.Repeat("2", 64), Actor: "bob", Outcome: "promoted", DecidedAt: base.Add(time.Minute)},
+		{StrategyID: "st_1", VersionHash: v2, ArtifactHash: strings.Repeat("3", 64), Actor: "carol", Outcome: "promoted", DecidedAt: base.Add(2 * time.Minute)},
+	}
+	for _, ev := range rows {
+		if err := log.RecordPromotion(ctx, ev); err != nil {
+			t.Fatalf("RecordPromotion: %v", err)
+		}
+	}
+
+	all, err := log.ListPromotions(ctx, PromotionFilter{StrategyID: "st_1"})
+	if err != nil {
+		t.Fatalf("ListPromotions: %v", err)
+	}
+	if len(all) != 2 || all[0].VersionHash != v2 || all[1].VersionHash != v1 {
+		t.Fatalf("st_1 promotions = %+v, want [v2, v1] (newest first)", all)
+	}
+
+	one, err := log.ListPromotions(ctx, PromotionFilter{StrategyID: "st_1", VersionHash: v1})
+	if err != nil {
+		t.Fatalf("ListPromotions(filter): %v", err)
+	}
+	if len(one) != 1 || one[0].Actor != "alice" {
+		t.Fatalf("filtered promotions = %+v, want only alice@v1", one)
+	}
+
+	paged, err := log.ListPromotions(ctx, PromotionFilter{StrategyID: "st_1", Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("ListPromotions(page): %v", err)
+	}
+	if len(paged) != 1 || paged[0].VersionHash != v1 {
+		t.Fatalf("paged promotions = %+v, want [v1]", paged)
+	}
+
+	empty, err := log.ListPromotions(ctx, PromotionFilter{StrategyID: "st_missing"})
+	if err != nil {
+		t.Fatalf("ListPromotions(empty): %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("missing strategy = %#v, want empty non-nil slice", empty)
+	}
+
+	if _, err := log.ListPromotions(ctx, PromotionFilter{StrategyID: " "}); !errors.Is(err, ErrInvalidParameter) {
+		t.Fatalf("empty strategy id: got %v, want ErrInvalidParameter", err)
+	}
+	// 版本 hash 按精确字符串匹配：写入侧允许的非 hex 值也必须能读回。
+	nonHex := PromotionEvent{StrategyID: "st_1", VersionHash: "vh-audit", ArtifactHash: "ah-audit",
+		Actor: "dave", Outcome: "rejected", DecidedAt: base.Add(3 * time.Minute)}
+	if err := log.RecordPromotion(ctx, nonHex); err != nil {
+		t.Fatalf("RecordPromotion(non-hex): %v", err)
+	}
+	got, err := log.ListPromotions(ctx, PromotionFilter{StrategyID: "st_1", VersionHash: "vh-audit"})
+	if err != nil {
+		t.Fatalf("ListPromotions(non-hex): %v", err)
+	}
+	if len(got) != 1 || got[0].Actor != "dave" {
+		t.Fatalf("non-hex filtered promotions = %+v, want dave@vh-audit", got)
+	}
+}

@@ -208,9 +208,68 @@ func TestPromoteRequiresActorAndWritesAudit(t *testing.T) {
 	if ev.DecidedAt.IsZero() {
 		t.Fatal("audit decided_at is zero")
 	}
+
+	// ── K11 读面：resolve 回写审批态 + 审计可读（谁/何时/结论）──
+	resp = call(t, srv, http.MethodGet, "/api/strategies/"+id+"/resolve?ref=latest", nil, nil)
+	wantStatus(t, resp, http.StatusOK)
+	resolved := decodeObject(t, resp.Body)
+	if got, _ := resolved["status"].(string); got != string(asset.StatusPromoted) {
+		t.Fatalf("resolve status = %q, want promoted (body: %s)", got, resp.Body)
+	}
+	if got, _ := resolved["artifact_hash"].(string); got != artifactHash {
+		t.Fatalf("resolve artifact_hash = %q, want %s", got, artifactHash)
+	}
+
+	resp = call(t, srv, http.MethodGet, "/api/strategies/"+id+"/promotions?version_hash="+version, nil, nil)
+	wantStatus(t, resp, http.StatusOK)
+	rows := decodeList(t, resp.Body)
+	if len(rows) != 1 {
+		t.Fatalf("audit read rows = %d, want 1 (body: %s)", len(rows), resp.Body)
+	}
+	if rows[0]["actor"] != "alice" || rows[0]["outcome"] != "promoted" {
+		t.Fatalf("audit read row = %+v, want actor=alice outcome=promoted", rows[0])
+	}
+	if got, _ := rows[0]["version_hash"].(string); got != version {
+		t.Fatalf("audit read version_hash = %q, want %s", got, version)
+	}
+
+	// 没有审批行的策略回空切片（不是 null，也不是「猜一个」）。
+	resp = call(t, srv, http.MethodGet, "/api/strategies/st_none/promotions", nil, nil)
+	wantStatus(t, resp, http.StatusOK)
+	if got := decodeList(t, resp.Body); len(got) != 0 {
+		t.Fatalf("audit read for unknown strategy = %v, want []", got)
+	}
+	// 不匹配的版本 hash 回空切片（精确匹配，不是前缀/模糊匹配）。
+	resp = call(t, srv, http.MethodGet,
+		"/api/strategies/"+id+"/promotions?version_hash="+strings.Repeat("0", 64), nil, nil)
+	wantStatus(t, resp, http.StatusOK)
+	if got := decodeList(t, resp.Body); len(got) != 0 {
+		t.Fatalf("audit read for non-matching version = %v, want []", got)
+	}
 }
 
 // ─── 探针 ──────────────────────────────────────────────────────
+
+// 审计读面未装配时必须 503：读不到 ≠ 没有审批行。
+func TestListPromotionsWithoutAuditStoreIsUnavailable(t *testing.T) {
+	svc, err := asset.New(asset.Options{
+		Store:    asset.NewMemory(),
+		Compiler: &fakeCompiler{id: "tinygo-test", bytes: wasmWithImports("env.get_bar")},
+		IDGen:    func() string { return "st_no_audit" },
+		Now:      func() time.Time { return time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("asset.New: %v", err)
+	}
+	api, err := New(svc, WithAuthorizer(NewAuthorizer(auth.NewTokenService(auth.Config{}))))
+	if err != nil {
+		t.Fatalf("httpapi.New: %v", err)
+	}
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/st_no_audit/promotions", nil, nil),
+		http.StatusServiceUnavailable, "audit_unavailable")
+}
 
 func TestProbesArePublicAndReadinessIsReal(t *testing.T) {
 	// 启用鉴权的进程里，两个探针也不需要 token。

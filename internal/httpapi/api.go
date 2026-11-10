@@ -48,6 +48,9 @@ var (
 	errRateLimited     = errors.New("request rate exceeded")
 	errActorRequired   = errors.New("actor is required")
 	errAuditFailed     = errors.New("promotion audit failed")
+	// errAuditUnavailable 表示审计读面没装配存储：读不到 ≠ 没有审批行，
+	// 必须 503 而不是回一份空列表。
+	errAuditUnavailable = errors.New("promotion audit is not configured")
 )
 
 // API 是 10 个公开端点 + 2 个内部端点 + 2 个探针的路由器。
@@ -123,6 +126,7 @@ func (a *API) register() {
 	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/validate", a.openRoute(a.validateVersion))
 	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/deprecate", a.openRoute(a.deprecate))
 	a.mux.HandleFunc("GET /api/strategies/{id}/versions", a.openRoute(a.listVersions))
+	a.mux.HandleFunc("GET /api/strategies/{id}/promotions", a.openRoute(a.listPromotions))
 	a.mux.HandleFunc("GET /api/strategies/{id}/builds/{job_id}", a.openRoute(a.getBuildJob))
 	a.mux.HandleFunc("GET /api/strategies/{id}/resolve", a.openRoute(a.resolve))
 	a.mux.HandleFunc("GET /api/strategies/{id}/versions/{hash}/artifact", a.openRoute(a.downloadArtifact))
@@ -328,6 +332,38 @@ func (a *API) listVersions(w http.ResponseWriter, r *http.Request) {
 		end = len(views)
 	}
 	writeJSON(w, http.StatusOK, views[offset:end])
+}
+
+// listPromotions 是 promote 审计的读面（K11 前置）：core 回测入口要能证明
+// 「这个版本是谁批的、什么时候、结论是什么」，而不是只看一个布尔位。
+//
+// 按既有口径保持端口隔离（不引 service token，见 api-schema §6.1）；
+// `?version_hash=` 是精确匹配（与写入侧同口径）。
+func (a *API) listPromotions(w http.ResponseWriter, r *http.Request) {
+	if a.promotionLog == nil {
+		writeError(w, fmt.Errorf("%w: promotion audit is not configured", errAuditUnavailable))
+		return
+	}
+	limit, offset, err := parsePage(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	events, err := a.promotionLog.ListPromotions(r.Context(), asset.PromotionFilter{
+		StrategyID:  r.PathValue("id"),
+		VersionHash: strings.TrimSpace(r.URL.Query().Get("version_hash")),
+		Limit:       limit,
+		Offset:      offset,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// 空列表必须是 []：编码成 null 会让调用方把「没有审批」读成「读面缺席」。
+	if events == nil {
+		events = []asset.PromotionEvent{}
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 // parsePage 解析 `?limit=&offset=`：缺省 200 / 0，上界 1000；非法值 400。
@@ -555,6 +591,8 @@ func classify(err error) (int, string) {
 		return http.StatusServiceUnavailable, "auth_unavailable"
 	case errors.Is(err, errAuditFailed):
 		return http.StatusInternalServerError, "audit_failed"
+	case errors.Is(err, errAuditUnavailable):
+		return http.StatusServiceUnavailable, "audit_unavailable"
 
 	case errors.Is(err, asset.ErrStrategyNotFound):
 		return http.StatusNotFound, "strategy_not_found"

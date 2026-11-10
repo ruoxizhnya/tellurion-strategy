@@ -45,15 +45,21 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 > `validate` / `promote` / `deprecate` / `artifact` 接受可选 body `{"toolchain": "..."}`（`artifact` 用同名 query 参数）；
 > 同一版本有多个工具链产物且未指定 toolchain 时返回 `409 ambiguous_artifact`，**不替调用方猜**。
 
-### 读侧（**引擎只用这两个**）
+### 读侧（引擎用前两个；promotions 供回测入口的 AI 闸门）
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/api/strategies/{id}/resolve?ref={hash\|latest}` | 解析 `strategy_ref` → 元数据（含 `artifact_hash` / `scope` / `capability` / `imports`） |
+| GET | `/api/strategies/{id}/resolve?ref={hash\|latest}` | 解析 `strategy_ref` → 元数据（含 `artifact_hash` / `scope` / `capability` / `imports` / **`status`**） |
 | GET | `/api/strategies/{id}/versions/{hash}/artifact` | 下载字节码（响应头 `X-Artifact-Hash`，支持 `ETag` / `If-None-Match` → 304） |
+| GET | `/api/strategies/{id}/promotions?version_hash=&limit=&offset=` | promote 审计读面（K11 前置）：谁 / 何时 / 结论，新的在前 |
 
 > `ref` 三形态：空 / `latest` → definition 的 active；64 位小写 hex → 先按 `artifact_hash` 查、查不到再按
 > `version_hash` 解析到该版本当前 promoted 的 artifact（**回写实际 `artifact_hash`**）；`id@hash` → id 必须与路径一致。
+>
+> `status` 是解析到的那一行 artifact 的审批态（`built` / `validated` / `promoted` / `rejected` / `deprecated`）。
+> 消费方（core 回测入口）必须 `status == promoted` 才继续；**不得用 definition 的 latest 指针或
+> `strategies.is_active` 冒充审批**。promotions 审计与 resolve 是两个读面：resolve 回状态，
+> `/promotions` 回审批留痕（缺留痕同样是拒绝条件，见 core `QT-32` K11）。
 
 ### 探针（公开、无鉴权、不限流）
 
@@ -177,6 +183,10 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
 | `ErrInvalidParameter` / `ErrInvalidDefinition` | 400 | `invalid_request` |
 | `ErrArtifactFetchFailed` | 500 | `internal`（真正的取字节故障，不吐内部原文） |
 
+> HTTP 层哨兵（不是 `asset.` 领域码）：`errAuthUnavailable` → 503 `auth_unavailable`、
+> `errAuditFailed` → 500 `audit_failed`、`errAuditUnavailable` → 503 `audit_unavailable`
+> （审计读面未装配存储；读不到 ≠ 没有审批行，不许回空列表）。
+
 > `contracts.ErrAbiVersionMismatch` **不在本服务的出口表里**：本仓不判定内核能力集，只在解析
 > `abi_version` 时用 `ErrInvalidABIVersion`（400）。跨仓消费方按契约哨兵 `errors.Is` 判定的语义不变。
 
@@ -275,6 +285,8 @@ verified-by: QT-41c 落地——build job 状态回写内部端点 + 外部编�
   `limit` 默认 **200**、上界 **1000**（`1..1000`），`offset` 默认 0、必须 `>= 0`；非法值 → 400 `invalid_request`。
 - 响应仍是**裸数组**（不是 `{items,total}`）：`offset` 超过末尾返回 `[]`，不报错。
   排序是服务端稳定序（版本创建时间升序，同时间按 hash），调用方不要依赖「第 N 页」语义做增量同步。
+- `GET /api/strategies/{id}/promotions` 同一套分页参数与裸数组形态，排序是**新的在前**（审计只能追加，
+  按插入序倒排）；`version_hash` 是可选的精确匹配过滤。
 - 其余端点没有列表语义（resolve / artifact / job 都是单条），不分页。
 
 ## 5. 不提供什么（边界）
@@ -379,7 +391,8 @@ QT-41b ③-⑤ 那句「Resolve/Fetch/Verify/Mount 分界」漏了 Compile 且�
 | 12 | `POST /internal/strategies/{id}/builds/{job_id}` | v1 | 400 `invalid_request`；401 `unauthenticated`；403 `forbidden`；404 `job_not_found`；409 `invalid_transition` / `artifact_invalid`；503 `auth_unavailable` |
 | 13 | `GET /healthz` | v1 | 仅 200（探针不限流） |
 | 14 | `GET /readyz` | v1 | 503（`status=not_ready`，探针不限流；不是 wire code） |
+| 15 | `GET /api/strategies/{id}/promotions` | v1 | 400 `invalid_request`（分页参数）；503 `audit_unavailable`（审计读面未装配） |
 
-- **429 `rate_limited`**：1–12 全部适用（按身份令牌桶，超限带 `Retry-After`）。探针 13–14 豁免。
+- **429 `rate_limited`**：1–12 与 15 全部适用（按身份令牌桶，超限带 `Retry-After`）。探针 13–14 豁免。
 - **500 `internal`**：所有端点的兜底，只用于真正的服务端故障；promote 的审计故障用更精确的 `audit_failed`。
 - **401 / 403 / 503 `auth_unavailable`**：只出现在受保护的三条（5、11、12）。

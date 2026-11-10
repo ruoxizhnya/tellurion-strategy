@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-10
-verified-by: SVC-STRAT-G4 真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG 16.15 + 真服务 `:18090` + 替身编译进程：非零退出自动 failed / 无终态回写留 running / 重启后仍 running / 内部端点收口 200 且同终态幂等、回退 running 409；库与临时件已清，0 代码改动）；SVC-STRAT-G4 PG 腿（2026-11-10，`tellurion_strategy_test` 全绿含迁移重放指纹 `10f6ee39…2954`）；QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
+verified-by: SVC-STRAT-G3-B 读面收口（2026-11-10：`ResolveResult` 增 `status` + `GET /api/strategies/{id}/promotions` 审计读端点；Memory/PG 双腿全绿、两条破坏验证真做真还原）；SVC-STRAT-G4 真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG 16.15 + 真服务 `:18090` + 替身编译进程：非零退出自动 failed / 无终态回写留 running / 重启后仍 running / 内部端点收口 200 且同终态幂等、回退 running 409；库与临时件已清，0 代码改动）；SVC-STRAT-G4 PG 腿（2026-11-10，`tellurion_strategy_test` 全绿含迁移重放指纹 `10f6ee39…2954`）；QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -45,10 +45,28 @@ verified-by: SVC-STRAT-G4 真回写面停机 + 卡死 job 人工收口演练（2
 - **⑥ 边界**：本仓只保证资产面；core 代码删除由 `SVC-CORE-STRAT-RETIRE` 跟踪。
 
 > **⛔ 开工前置复核（2026-10-26，未开工）**：
-> - **core promote 闸（QT-32）未开**：本仓 `/promote`（`internal/httpapi/api.go:46`）今天无鉴权、无审计；不会在闸门未定时先接 core。
+> - **core promote 闸（QT-32）未开**：本仓 `/promote`（`internal/httpapi/api.go:46`）今天无鉴权、无审计；不会在闸门未定时先接 core。**（2026-11-10 订正：鉴权 + 审计已由 `SVC-STRAT-G1` 闭合——三条受保护路由走 kit service token、`X-Actor` 必填、`strategy_promotions` 落三件套；本仓侧不再是 blocker，剩余前置在 core 消费面。）**
 > - ~~**`SVC-CORE-STRAT-RETIRE` 未立单**：core 本地注册表退役没有归属单，G3 只能停在「本仓就绪」。~~ → **已立单（2026-10-26 同日补）**：条目在 `tellurion:docs/TASKS.md:130`「六之二、退役执行单」，串行第 6，判据逐字抄 B 组材料 §4.3。G3 仍受「本仓就绪 + 退役单可派发」两条约束，但**不再有「找不到归属单」这一条**。
-> - **鉴权腿无法自行闭合**：`go.mod` 无 `tellurion-kit`，三条受保护路由（`/promote` + 两条 `/internal/*`）要引 `kit v0.1.4` 的 service-token 校验——属跨仓 pin，报协调者，不自行 `go get`。
+> - ~~**鉴权腿无法自行闭合**：`go.mod` 无 `tellurion-kit`…~~ **（2026-11-10 订正：`SVC-STRAT-G1` 已引 `kit`，三条受保护路由全部挂闸。）**
 > - **题干订正（实测）**：`rg -n "promoted" internal/asset/pgstore.go` 只命中注释与 `asset.StatusPromoted` 常量（`:403` / `:430`），**`:393` 附近没有硬编码字符串**；本轮未动 `internal/asset`。
+
+### SVC-STRAT-G3-B · core 回测闸门的读面：resolve 回写审批态 + promote 审计读端点 [P0] ✅（2026-11-10）
+
+- **① 目标**：让 core 回测入口能用**一次 resolve** 判定资产审批态、用一次审计读证明审批留痕；本仓只出读面，不改 promote 状态机。
+- **② 上下文**：core `QT-32` K11（「未 promote 的 AI 产物被回测拒绝」）有两个前置，其中之一是「读面缺判据」——`ResolveResult`（`internal/asset/model.go`）只回 artifact 坐标、不回 `status`；`strategy.strategy_promotions`（`SVC-STRAT-G1`）只有写端口、没有读端点，core 无法回答「谁批的 / 何时 / 结论」。G3 本身仍受 core 消费面阻塞，本单只解**读面**这一半。
+- **③ 要求**：① `ResolveResult` 增 `status`（取自解析到的 artifact 行，枚举沿用 `Status` 冻结五值）；② 新增 `GET /api/strategies/{id}/promotions?version_hash=&limit=&offset=`（裸数组、新的在前、版本 hash 精确匹配、分页与 `versions` 同口径）；③ 审计读未装配存储 → 503 `audit_unavailable`（**不许**回空列表冒充「没有审批」）；④ 读面**不改** ⑫ 的三条鉴权边界（只靠端口隔离）。
+- **④ 约束与非目标**：不改 promote 状态机；不改 `active_version_hash` / `active_artifact_hash` 的双空约束；**不实现「无 artifact 载体（dsl / builtin / external）的版本级 promote」**——那是结构性裁决（`Promote` 前置 `pickArtifact`，dsl 无产物 ⇒ 在资产服务里无法 promote），另立单；不改 `version_hash` 编码；不加缓存。
+- **⑤ 验收**：resolve 在 promoted 版本上回 `status=promoted`；审计读回 `actor` / `outcome` / `version_hash` 且新的在前（Memory + 真 PG 两条腿）；未知策略 / 不匹配 hash 回 `[]`；未装配审计 → 503 `audit_unavailable`；破坏验证两条（去掉 `Status` 赋值 / 把审计排序改 ASC）均红→还原→绿。
+- **⑥ 边界**：本仓读面；core 的解析客户端与 K11 闸门在 `tellurion:docs/TASKS.md` QT-32 的拆项里，不在本单。
+
+> **施工记录（2026-11-10）**
+>
+> - **代码**：`internal/asset/model.go` 的 `ResolveResult` 增 `Status Status `json:"status"``；`service.go` 的 `buildResolveResult` 从 artifact 行回填；`promotions.go` 增 `PromotionFilter` + `PromotionLog.ListPromotions`（Memory 与 PG 两实现，新的在前、精确过滤、`Limit<=0` 不分页——不能写 `LIMIT 0`）；`internal/httpapi/api.go` 增 `GET /api/strategies/{id}/promotions`（openRoute，分页复用 `parsePage`）与哨兵 `errAuditUnavailable` → 503。
+> - **用例**：`internal/asset/asset_test.go` 新增 `TestMemoryPromotionLog_ListPromotionsFiltersOrdersAndPages`（倒排 / 过滤 / 分页 / 空切片 / 空策略 id / 非 hex hash 可读回）；`internal/asset/g1_pg_test.go` 新增 `TestPG_ListPromotionsReadsBackWhatWasWritten`；`internal/httpapi/g1_test.go` 在 `TestPromoteRequiresActorAndWritesAudit` 末尾补 resolve `status=promoted` + 审计读回 + 未知策略 `[]` + 不匹配 hash `[]`，并新增 `TestListPromotionsWithoutAuditStoreIsUnavailable`（503）。
+> - **真实输出**：`gofmt -l .` 无输出；`go vet ./...` **EXIT=0**；`go test ./... -count=1` **EXIT=0**（7 包全 ok）；真 PG 16.15 库 `tellurion_strategy_test`：`STRATEGY_TEST_DSN=… go test ./internal/asset -run 'TestPG_' -count=1 -v` **EXIT=0**，10 条 PG 用例全 PASS（含新增 `TestPG_ListPromotionsReadsBackWhatWasWritten`）。
+> - **破坏验证（真做真还原）**：① 注释掉 `buildResolveResult` 的 `Status: a.Status` ⇒ `TestPromoteRequiresActorAndWritesAudit` 红（`resolve status = "", want promoted`），还原后绿；② 把 PG 审计读的 `ORDER BY id DESC` 改 `ASC` ⇒ `TestPG_ListPromotionsReadsBackWhatWasWritten` 红（`order = [promoted, rejected]`），还原后绿。
+> - **文档**：`docs/api-schema.md` 读侧表新增该端点并写明 `status` 语义与「不得用 latest 指针 / `strategies.is_active` 冒充审批」；§2.1 补 HTTP 层哨兵；§4.2 补第二条列表端点；§7 表新增第 15 行。
+> - **待主任追认（结构性缺口，未在本单擅自改）**：`Promote` 的前置是 `pickArtifact`，`carrier=dsl|builtin|external` 没有 artifact 行 ⇒ **在资产服务里无法 promote**。而 agent 当前生成物按裁决 ⑩ 以 `carrier=dsl` 登记 ⇒ 若 core K11 只认 `status == promoted`，AI 生成的 dsl 产物会**恒被拒绝**。是否补「无 artifact 载体的版本级审批（`active_version_hash` 单边非空 + 审计行）」需单独裁决；本单只保证读面能如实回答现状，不用假状态绕过。
 
 ### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ✅（2026-10-24 G4 收口；余项为非目标/跨仓指针）
 

@@ -730,6 +730,7 @@ func buildResolveResult(def Definition, a Artifact) ResolveResult {
 		MemoryLimit:  a.MemoryLimitBytes,
 		Imports:      append([]string(nil), a.Imports...),
 		Toolchain:    a.Toolchain,
+		Status:       a.Status,
 	}
 }
 
