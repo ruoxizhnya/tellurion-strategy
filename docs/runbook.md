@@ -144,7 +144,7 @@ go test ./internal/asset -run TestPGMigrationsAreReplayable -count=1 -v
 `[已执行 2026-11-10]` 本机 PostgreSQL 16.15（Windows 服务，`127.0.0.1:5432`，库 `tellurion_strategy_test`）：
 本命令退出码 0，输出 `schema fingerprint stable across replay: 10f6ee398ac1553f0912fabb1dd671c5a44dd8bf69494ce432e383d3ea329354`。
 同套 PG 腿（`TestPG_ReadyRequiresMigratedSchema` / `TestPG_MigrateIsIdempotent` / `TestPG_ServiceOnPG` 等）全部 PASS。
-**skip 不等于通过**：未设 `STRATEGY_TEST_DSN` 时仍会 skip，上线前必须在目标库跑一次；真 TinyGo 镜像腿（`STRATEGY_TINYGO_IMAGE` + Docker）本机 Docker 引擎未启动，仍为 `[未执行]`。
+**skip 不等于通过**：未设 `STRATEGY_TEST_DSN` 时仍会 skip，上线前必须在目标库跑一次；真 TinyGo 镜像腿见 §4（2026-11-10 已执行）。
 
 核对表是否齐（六张表）：
 
@@ -171,7 +171,9 @@ go test ./internal/compile -run TestCompile_RealTinyGoImage -count=1 -v
 2. `--network none` 编译两份源码，断言产物可 `Verify` 且同源码同产物；
 3. 任何一步不符直接 `FAIL`，不降级成 skip。
 
-`[未执行]` 本机 Docker 引擎不可用、无 TinyGo 镜像：未跑。若 `STRATEGY_TINYGO_IMAGE` 已设但
+`[已执行 2026-11-10]` 本机 Docker 引擎 `29.8.0`、镜像 `tinygo/tinygo:0.34.0`（`docker pull` 返回 `Image is up to date`）：
+`TestPinnedToolchainLockHasRealTinyGo` **PASS**、`TestCompile_RealTinyGoImage` **PASS（8.61s）**，
+`ok tellurion-strategy/internal/compile 9.296s`，退出码 0。若 `STRATEGY_TINYGO_IMAGE` 已设但
 Docker 不可用，用例会 `SKIP: docker is not available`——这同样**不算验证通过**。
 
 离线可跑的部分（不需要 Docker）：

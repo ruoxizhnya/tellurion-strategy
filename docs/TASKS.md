@@ -425,7 +425,7 @@ verified-by: SVC-STRAT-G3-B 读面收口（2026-11-10：`ResolveResult` 增 `sta
 >
 > **文档**：`db-schema.md` §1（六张表）、§1.1（K5 对照表）、§3（新表约束）、§4（迁移清单）。
 
-### SVC-STRAT-G4 · 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036）[P1] 🔶
+### SVC-STRAT-G4 · 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036）[P1] ✅（2026-11-10 真 TinyGo 镜像腿补跑通过）
 
 - **① 目标**：把「编译链路挂了会怎么样、多久放弃、怎么查、怎么回滚」成文并跑过一次——本仓的外部依赖（TinyGo 工具链 / `cmd/compiler` 子进程）是全系统最容易静默失败的一环。
 - **② 上下文**：QT-41c 已落跨进程闭环：`POST .../build` → `internal/compilerclient` 派发 `cmd/compiler` → 内部端点回写 `queued → running → succeeded | failed`（失败带 `error_code`），`-compiler-bin` 为空时 build 端点 fail-closed 503 `compile_unavailable`；G5 已落编译 job 的队列 / 重试 / 限并发；本仓 `docs/evidence/QT-41b-tinygo-0.34.0.md` 有真工具链取证姿势。**缺口**：无 runbook（全 workspace `runbook` 只在 ADR-036 正文里出现）；无 `/readyz`（属 `SVC-STRAT-G1` ③）；子进程超时上界与「编译器进程被 OOM killer 杀掉」这类失败在文档里没有位置；`STRATEGY_TINYGO_IMAGE` 腿的 skip 与 fail 未区分口径。
@@ -462,8 +462,7 @@ verified-by: SVC-STRAT-G3-B 读面收口（2026-11-10：`ResolveResult` 增 `sta
 >   10f6ee398ac1553f0912fabb1dd671c5a44dd8bf69494ce432e383d3ea329354`）、`TestPG_ServiceOnPG`、
 >   `TestPG_ReadyRequiresMigratedSchema`、`TestPG_MigrateIsIdempotent` 等 10 条 PG 用例。
 >   `docs/runbook.md` 该条已由 `[未执行]` 改为 `[已执行 2026-11-10]`。
-> - **未执行（故仍不标 ✅）**：真 TinyGo 0.34.0 镜像编译（需 Docker 引擎，本机 Rancher Desktop 未启动、
->   `docker info` 连不上 `dockerDesktopLinuxEngine`）。~~真回写面停机的端到端演练（人工收口见 runbook §6）~~ **✅ 已补 2026-11-10**（见下条）。
+> - **真 TinyGo 0.34.0 镜像腿（2026-11-10 补跑，最后一项缺口）**：本机 Docker 引擎 `29.8.0`（Docker Desktop 经 `explorer.exe` 拉起后 `docker info` 返回版本号），`docker pull tinygo/tinygo:0.34.0` → `Image is up to date`。`STRATEGY_TINYGO_IMAGE=tinygo/tinygo:0.34.0 go test ./internal/compile -run 'TestCompile_RealTinyGoImage|TestPinnedToolchainLockHasRealTinyGo' -count=1 -v` → `TestPinnedToolchainLockHasRealTinyGo PASS`、`TestCompile_RealTinyGoImage PASS (8.61s)`、`ok tellurion-strategy/internal/compile 9.296s`，**退出码 0**（非 skip）。`docs/runbook.md` §4 该条已改 `[已执行 2026-11-10]`。⇒ ⑤ 五项全部有真实输出，本单翻 ✅。
 > - **门禁**：`gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test ./... -count=1` 均退出码 0。
 >
 > **真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG · 真进程 · 0 代码改动）**
