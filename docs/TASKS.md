@@ -67,6 +67,7 @@ verified-by: SVC-STRAT-G3-B 读面收口（2026-11-10：`ResolveResult` 增 `sta
 > - **破坏验证（真做真还原）**：① 注释掉 `buildResolveResult` 的 `Status: a.Status` ⇒ `TestPromoteRequiresActorAndWritesAudit` 红（`resolve status = "", want promoted`），还原后绿；② 把 PG 审计读的 `ORDER BY id DESC` 改 `ASC` ⇒ `TestPG_ListPromotionsReadsBackWhatWasWritten` 红（`order = [promoted, rejected]`），还原后绿。
 > - **文档**：`docs/api-schema.md` 读侧表新增该端点并写明 `status` 语义与「不得用 latest 指针 / `strategies.is_active` 冒充审批」；§2.1 补 HTTP 层哨兵；§4.2 补第二条列表端点；§7 表新增第 15 行。
 > - **待主任追认（结构性缺口，未在本单擅自改）**：`Promote` 的前置是 `pickArtifact`，`carrier=dsl|builtin|external` 没有 artifact 行 ⇒ **在资产服务里无法 promote**。而 agent 当前生成物按裁决 ⑩ 以 `carrier=dsl` 登记 ⇒ 若 core K11 只认 `status == promoted`，AI 生成的 dsl 产物会**恒被拒绝**。是否补「无 artifact 载体的版本级审批（`active_version_hash` 单边非空 + 审计行）」需单独裁决；本单只保证读面能如实回答现状，不用假状态绕过。
+> - **消费方冒烟（2026-11-10 晚，cross-repo 指针）**：core `QT-32` 新增 opt-in 用例 `cmd/analysis/wiring/strategy_asset_live_test.go`，对**真的 `cmd/assetservice` 进程**（内存 Store、无 `-jwt-secret` 回环开放、`:18090`）走 create → source → `POST /internal/.../artifacts` → validate → promote（`X-Actor`）→ `GET .../promotions`，再从 core 侧断言放行与 404 / 409 两条拒绝。本单的 `status` 与审计读端点在该链路里被真实消费（证据与命令见 `tellurion:docs/TASKS.md` QT-32「2026-11-10 晚」段）；本仓无代码改动。
 
 ### QT-41 · X2 策略资产服务（定义/版本/artifact/resolve）[P1] ✅（2026-10-24 G4 收口；余项为非目标/跨仓指针）
 
