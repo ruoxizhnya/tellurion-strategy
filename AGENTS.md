@@ -65,7 +65,7 @@ go test ./...
 |---|---|---|
 | `github.com/ruoxizhnya/tellurion-contracts` | `v0.5.0`（2026-10-24 发版，非伪版本；G4 切 pin） | 实际使用 `engine` 子包（package 名仍是 `contracts`）：`StrategyRef` / `ParseStrategyRef` / `ArtifactHash` / `HostABIContracts` / abi 哨兵 / **编译·资产四哨兵**（`ErrCompileFailed` / `ErrCompileUnavailable` / `ErrSourceTooLarge` / `ErrArtifactTooLarge`，本仓以同名别名消费，见 `internal/asset/errors.go`）；QT-22 起消费 `StrategyVersionInput` / `DomainStrategyVersionHash`（G5 ③ 已收编：`internal/asset/hash.go` 无本地定义，编码委托 `StrategyVersionInput.Hash()`；域字符串逐字节未变） |
 | `github.com/jackc/pgx/v5` | `v5.7.3` | **生产 PG `Store`**（`internal/asset/pgstore.go`）与连接池；版本与 core / kit / data 仓一致。仅存储层使用，不把 `pgx` 类型泄进领域模型 |
-| `github.com/ruoxizhnya/tellurion-kit` | `v0.1.4`（2026-11-07 引入，G1） | `auth` + `auth/httpadapter`：service-token 校验、角色 any-of、`RouteKey`、启动闸 `DecideStartup`。只在 `internal/httpapi` 与 `cmd/assetservice` 使用，不把 kit 类型泄进 `internal/asset` 领域模型 |
+| `github.com/ruoxizhnya/tellurion-kit` | `v0.2.0`（2026-11-07 引入 `v0.1.4`，G1；2026-11-10 随 kit `KT-13` 升） | `auth` + `auth/httpadapter`：service-token 校验、角色 any-of、`RouteKey`、启动闸 `DecideStartup`。只在 `internal/httpapi` 与 `cmd/assetservice` 使用，不把 kit 类型泄进 `internal/asset` 领域模型 |
 | `github.com/stretchr/testify` | `v1.11.1` | **仅测试**断言（与 contracts 仓同版本）；随 QT-41/41b 测试引入，2026-10-23 补登记 |
 
 > 跨仓依赖**只认版本号**（伪版本或 tag），不认源码路径。契约变更走 `tellurion-contracts` 的发布，不走"顺手改一下"。
