@@ -1,7 +1,7 @@
 ---
 status: active
 last-verified: 2026-11-10
-verified-by: SVC-STRAT-G3 复核（2026-11-10：core 零调用仅三条注释，且 `SVC-CORE-STRAT-RETIRE` 已裁「本地 registry、不改 HTTP」⇒ 本单 ①/⑤ 与 core 裁决冲突，维持 ⛔ 并升级为待主任裁决）；SVC-STRAT-G3-B 读面收口（2026-11-10：`ResolveResult` 增 `status` + `GET /api/strategies/{id}/promotions` 审计读端点；Memory/PG 双腿全绿、两条破坏验证真做真还原）；SVC-STRAT-G4 真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG 16.15 + 真服务 `:18090` + 替身编译进程：非零退出自动 failed / 无终态回写留 running / 重启后仍 running / 内部端点收口 200 且同终态幂等、回退 running 409；库与临时件已清，0 代码改动）；SVC-STRAT-G4 PG 腿（2026-11-10，`tellurion_strategy_test` 全绿含迁移重放指纹 `10f6ee39…2954`）；QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
+verified-by: SVC-STRAT-G3 收口（2026-11-10：主任裁决 A，按已落边界重写验收——内置策略走本地 registry 不联网、非空 `strategy_ref` 走本仓 resolve + 审批闸门、promote 由 agent/操作者直连本仓、旧 DB 注册表已删；原 ①/⑤ 作废，详见 ADR-0004）；此前 SVC-STRAT-G3 复核（2026-11-10：原文 ①/⑤ 与 core 本地 registry 裁决冲突，曾维持 ⛔ 并升级为待主任裁决）；SVC-STRAT-G3-B 读面收口（2026-11-10：`ResolveResult` 增 `status` + `GET /api/strategies/{id}/promotions` 审计读端点；Memory/PG 双腿全绿、两条破坏验证真做真还原）；SVC-STRAT-G4 真回写面停机 + 卡死 job 人工收口演练（2026-11-10，真 PG 16.15 + 真服务 `:18090` + 替身编译进程：非零退出自动 failed / 无终态回写留 running / 重启后仍 running / 内部端点收口 200 且同终态幂等、回退 running 409；库与临时件已清，0 代码改动）；SVC-STRAT-G4 PG 腿（2026-11-10，`tellurion_strategy_test` 全绿含迁移重放指纹 `10f6ee39…2954`）；QT-41c 收口 QT-41b 余项——编译进程状态回写内部端点 + `internal/compilerclient` + `cmd/assetservice` 外部编译器装配
 ---
 
 # TASKS — tellurion-strategy 未完成项
@@ -35,21 +35,26 @@ verified-by: SVC-STRAT-G3 复核（2026-11-10：core 零调用仅三条注释，
 > - **审查修复（2026-10-26，容器启动即退出）**：首版镜像以 `USER nobody` 运行，但 `defaultCacheDir()` 走 `os.UserCacheDir()`，nobody 的 HOME 是 `/` ⇒ `assetservice: asset: cache dir: mkdir /.cache: permission denied`，进程启动即退；compose 的命名卷 `strategy-artifacts` 首次挂载为 root 属主，同样不可写。修复（只动 `Dockerfile`，不碰 `internal/asset`）：`RUN mkdir -p /data/artifacts && chown 65534:65534 /data/artifacts` + `ENV XDG_CACHE_HOME=/tmp/.cache`（不传 `-cache-dir` 时缓存落到人人可写的 `/tmp`）。实测：裸跑（默认缓存）与挂命名卷（`-cache-dir /data/artifacts`）两种形态 TCP `8090` 均通、`docker inspect` → `healthy`。
 > - **如实登记**：`internal/asset` 业务逻辑未动；未引 `tellurion-kit`；公开 `/healthz` 仍未落（归 G1），故 G0 只能 TCP 探针；promote 鉴权缺口（`internal/httpapi/api.go:46`）**未修**——属 G3 / QT-32 闸门，不能在本轮自行引入 kit。
 
-### SVC-STRAT-G3 · core 消费与本地注册表退役（ADR-036）[P0] ⛔（2026-10-26 复核：前置未开）
+### SVC-STRAT-G3 · core 消费与本地注册表退役（ADR-036）[P0] ✅（2026-11-10 按已落边界重写验收收口，主任裁决 A）
 
-- **① 目标**：core 的策略资产解析/注册/promote 走本仓；core 本地 `strategies` 表与资产注册表退役，运行时 `pkg/strategy` 保留。
-- **② 上下文**：本仓 12 端点已实装，但 core 零调用方，`/promote` 零调用；core 仍以 `quant.strategies` + 本地注册表为真相。
-- **③ 要求**：本仓先引 kit `v0.1.4` 鉴权（`/promote` + `/internal/*`）；core 加 resolve/写侧客户端；按四步迁移定义与版本；停写 `strategies` 表；保留运行时引擎与内置策略，只退役资产注册；promote 闸门走本仓审计。
-- **④ 约束与非目标**：不把信号计算/回测搬进本仓；不迁内置策略全量；不改 `version_hash` 编码；不做对象存储。
-- **⑤ 验收**：core 侧 `strategies` 表零写入；core `/promote` 真实调用本仓；资产版本与 core 原定义逐条对拍；旧注册表删除或只读。
-- **⑥ 边界**：本仓只保证资产面；core 代码删除由 `SVC-CORE-STRAT-RETIRE` 跟踪。
+> **2026-11-10 主任裁决 A（收口）**：按已落边界重写本单，不再要求 core 全量解析/注册/promote。边界 = **内置策略走 core 本地 registry（不联网）；非空 `strategy_ref` 走本仓 resolve + 审批闸门；promote 由 agent/操作者直连本仓，core 只读校验；core 本地 `strategies` 表与 DB 资产注册腿已删，运行时 `pkg/strategy` 保留**。成文见 [ADR-0004](adr/0004-core消费边界与promote归属.md)；ADR-036 §6 同步修订。
+> - **⑫ 的解释**：`promote 走 core 网关 + X-Actor` 按**部署入口**解释（集群 ingress / 端口隔离），不是 core 代码级转发路由；core 当前无 `/promote` 路由。若将来要求代码级网关，另立单，不在本单验收。
+> - **过期结论订正**：下方 2026-11-10 复核中「core 仍零调用」**已过期**——该复核 grep 只覆盖 `strategy-service|STRATEGY_URL|8089|strategyservice`，漏了 `strategy_asset.resolve_url`。K11 已于 2026-11-10 生产接线（core `cmd/analysis/wiring/strategy_asset.go`、`cmd/analysis/main.go:304`、`cmd/analysis/handlers_backtest.go:174`、`internal/orchestrationworker/executor.go:77`、`config/analysis-service.yaml:112`）：非空 ref 真实调用 resolve + promotions。
+> - **本次仅文档/台账，无代码改动**；resolve 读面由 `SVC-STRAT-G3-B`（✅）与 core `QT-32`（✅）闭合。
 
-> **⛔ 开工前置复核（2026-10-26，未开工）**：
+- **① 目标**：core 内置策略走本地 registry（不联网）；非空 `strategy_ref` 走本仓 resolve + 审批闸门；promote 由 agent/操作者直连本仓并落审计，core 只读校验；core 本地 `strategies` 表与 DB 资产注册腿退役，运行时 `pkg/strategy` 保留。
+- **② 上下文**：本仓 12 端点已实装；`SVC-STRAT-G1` 已闭合 `/promote` + `/internal/*` 鉴权与审计；`SVC-STRAT-G3-B` 已补 `ResolveResult.status` 与 promotions 读端点；core `SVC-CORE-STRAT-RETIRE`（2026-11-09 ✅）已删 `strategies` 表并定死本地 registry；core `QT-32`（2026-11-10 ✅）的 K11 闸门已生产接线。
+- **③ 要求**：① 本仓 `/promote` + 两条 `/internal/*` 保持 kit service-token + `X-Actor`（已落）；② core 对非空 `strategy_ref` 的 resolve 与状态/审计校验保持生产接线（已落）；③ promote 由 agent/操作者直连本仓，core 不提供转发路由；④ 内置策略路径零网络、行为逐字节不变。
+- **④ 约束与非目标**：不要求 core 提供 list-all / 注册代理；不恢复 core `strategies` 表；不改 `version_hash` 编码；不让 promote 依赖 core 在线；不把信号计算/回测搬进本仓；不做对象存储。
+- **⑤ 验收**：① core `strategies` 表零写入且表已删（`SVC-CORE-STRAT-RETIRE` 计数 0）；② core 对非空 `strategy_ref` 的 resolve + 审批闸门真实生效（K11：错误面 + 真 assetservice 冒烟；空 ref 跳过）；③ core 无 `/promote` 路由；promote 直连本仓并落 `strategy_promotions` 审计；core 只读校验 `status=promoted` + 审计行；④ 内置策略路径不联网、行为逐字节不变；⑤ 旧 DB 注册表已删除（非只读）。
+- **⑥ 边界**：本仓只保证资产面；core 代码删除/内置 registry 保留由 `SVC-CORE-STRAT-RETIRE` 跟踪；代码级 promote 网关若将来要求，另立单。
+
+> **历史：⛔ 开工前置复核（2026-10-26 / 2026-11-10，已由上述裁决收口，仅留档）**：
 > - **core promote 闸（QT-32）未开**：本仓 `/promote`（`internal/httpapi/api.go:46`）今天无鉴权、无审计；不会在闸门未定时先接 core。**（2026-11-10 订正：鉴权 + 审计已由 `SVC-STRAT-G1` 闭合——三条受保护路由走 kit service token、`X-Actor` 必填、`strategy_promotions` 落三件套；本仓侧不再是 blocker，剩余前置在 core 消费面。）**
 > - ~~**`SVC-CORE-STRAT-RETIRE` 未立单**：core 本地注册表退役没有归属单，G3 只能停在「本仓就绪」。~~ → **已立单（2026-10-26 同日补）**：条目在 `tellurion:docs/TASKS.md:130`「六之二、退役执行单」，串行第 6，判据逐字抄 B 组材料 §4.3。G3 仍受「本仓就绪 + 退役单可派发」两条约束，但**不再有「找不到归属单」这一条**。
 > - ~~**鉴权腿无法自行闭合**：`go.mod` 无 `tellurion-kit`…~~ **（2026-11-10 订正：`SVC-STRAT-G1` 已引 `kit`，三条受保护路由全部挂闸。）**
 > - **题干订正（实测）**：`rg -n "promoted" internal/asset/pgstore.go` 只命中注释与 `asset.StatusPromoted` 常量（`:403` / `:430`），**`:393` 附近没有硬编码字符串**；本轮未动 `internal/asset`。
-> - **2026-11-10 复核（仍未开工，阻塞性质变更）**：core 非测试 Go 对 `strategy-service` / `STRATEGY_URL` / `8089` / `strategyservice` 的命中只有三条**注释**（`pkg/backtest/engine.go:947`、`pkg/bootstrap/auth.go:32`、`pkg/strategy/signal_provider.go:381`，均写明外部 strategy-service 路径已随 REV-16 删除）⇒ core 仍零调用。更关键：`SVC-CORE-STRAT-RETIRE`（2026-11-09 ✅）已把 ③ 的二选一**定死为本地 registry（不改 HTTP）**，理由是 strategy 服务无 list-all 端点 + 定义 schema 语义不同（K5）。因此本单 ①「core 的解析/注册/promote 走本仓」与 ⑤「core `/promote` 真实调用本仓」**与 core 已落裁决冲突，按原文不可能完成**。⇒ 维持 ⛔，但阻塞性质从「等 core 消费面」变为「**待主任裁决**」：要么撤销本单（资产面只做本仓自证），要么把验收改写为「与 core 本地 registry 共存的资产写入面」；裁决前不动代码。
+> - **2026-11-10 复核（已由上方收口块订正）**：core 非测试 Go 对 `strategy-service` / `STRATEGY_URL` / `8089` / `strategyservice` 的命中只有三条**注释**（`pkg/backtest/engine.go:947`、`pkg/bootstrap/auth.go:32`、`pkg/strategy/signal_provider.go:381`，均写明外部 strategy-service 路径已随 REV-16 删除）⇒ core 仍零调用。更关键：`SVC-CORE-STRAT-RETIRE`（2026-11-09 ✅）已把 ③ 的二选一**定死为本地 registry（不改 HTTP）**，理由是 strategy 服务无 list-all 端点 + 定义 schema 语义不同（K5）。因此本单 ①「core 的解析/注册/promote 走本仓」与 ⑤「core `/promote` 真实调用本仓」**与 core 已落裁决冲突，按原文不可能完成**。⇒ 维持 ⛔，但阻塞性质从「等 core 消费面」变为「**待主任裁决**」：要么撤销本单（资产面只做本仓自证），要么把验收改写为「与 core 本地 registry 共存的资产写入面」；裁决前不动代码。**（2026-11-10 主任裁决 A = 后者；此段仅留档，以上方收口块为准。）**
 
 ### SVC-STRAT-G3-B · core 回测闸门的读面：resolve 回写审批态 + promote 审计读端点 [P0] ✅（2026-11-10）
 
