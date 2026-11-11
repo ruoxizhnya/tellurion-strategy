@@ -54,12 +54,14 @@ $p = Start-Process -FilePath "$dir\assetservice.exe" -ArgumentList @(
 - `-compiler-bin` 为空 = 编译能力关闭，build 端点恒 503 `compile_unavailable`（fail-closed）。
 - `-compiler-process-timeout` 是 **cmd/compiler 子进程硬上界**，默认 `20m`、最大 `1h`；
   实际生效值 = min(批次预算, 该值)。批次预算 = `maxAttempts × (timeout + backoff) + 1min`。
-- 无 `-jwt-secret` 时只在回环地址开放访问；非回环绑定会被启动闸拒绝。生产必须给
+- 无 `-jwt-secret` 时进程可在回环地址启动，但**受保护路由一律 503 `auth_unavailable`**
+  （启动豁免只免「启动拒绝」，不免写端点鉴权）；非回环绑定会被启动闸直接拒绝。生产必须给
   `JWT_SECRET` / `AUTH_JWT_SECRET` 或显式 `-insecure-exposure`。
 - **写端点从 2026-11-12 起要 service token**：5 条资产写（create / source / build / validate / deprecate）
   与 `/promote`、2 条 `/internal/*` 全部只认 `role=service`（`internal/httpapi/policy.go`）。
   回环豁免**只免除启动拒绝**，不会让受保护路由放行：没配 secret 时受保护路由 503 `auth_unavailable`，
-  配了 secret 但请求不带 token 时 401 `unauthenticated`——**没有「没配 secret 就放行」的后门**。
+  配了 secret 但请求不带 token 时 401 `unauthenticated`——**没有「没配 secret 就放行」的后门**
+  （四种启动姿态的实测状态码见 ADR-0005「实测矩阵」）。
   本地直跑要给写链路放行，按三步配（secret 只走 env，不进 argv）：
 
   ```powershell

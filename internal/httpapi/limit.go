@@ -60,7 +60,8 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 	return true
 }
 
-// rateKey 归一分桶键：没有身份概念（开放访问）的调用方共用一个桶。
+// rateKey 归一分桶键：没有身份（限流键声明为匿名）的调用方共用一个桶。
+// 未配置 secret 时受保护路由在鉴权层就 503，不会走到这里。
 func rateKey(principal string) string {
 	if principal == "" {
 		return "open-access"

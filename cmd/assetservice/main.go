@@ -73,10 +73,11 @@ func run() error {
 	flag.Var(&compilerArgs, "compiler-arg", "toolchain argument template passed to cmd/compiler (repeatable)")
 	flag.Var(&compilerEnv, "compiler-env", "environment variable passed through to the external toolchain (repeatable)")
 
-	// 鉴权（SVC-STRAT-G1）：只有 /promote 与两条 /internal/* 受保护。无 secret
-	// 时退到开放访问——启动闸保证它只可能发生在回环或显式 loopback-published。
+	// 鉴权（SVC-STRAT-G1 + STRAT-WRITE-AUTH-ROLLOUT）：八条写端点受保护。
+	// 无 secret 时进程可在回环/显式声明下启动，但受保护路由一律 503
+	// auth_unavailable——回环豁免只免「启动拒绝」，不免写端点鉴权。
 	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"),
-		"JWT secret shared with core (empty = open access on loopback only)")
+		"JWT secret shared with core (empty = protected endpoints answer 503 auth_unavailable)")
 	exposure := flag.String("insecure-exposure", os.Getenv("AUTH_INSECURE_EXPOSURE"),
 		"explicit exposure declaration for open access on a non-loopback bind (only loopback-published is accepted)")
 	flag.Parse()
@@ -86,7 +87,7 @@ func run() error {
 		return errors.New(startup.Reason)
 	}
 	if startup.Insecure {
-		slog.Warn("authentication disabled (open access); bind address must be loopback or loopback-published",
+		slog.Warn("authentication is not configured: all protected (write) endpoints answer 503 auth_unavailable; bind address must be loopback or loopback-published",
 			"addr", *addr)
 	}
 	tokens := auth.NewTokenService(auth.Config{JWTSecret: startup.Secret})

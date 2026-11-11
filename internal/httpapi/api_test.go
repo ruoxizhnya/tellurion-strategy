@@ -15,7 +15,6 @@ import (
 	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
-	"github.com/ruoxizhnya/tellurion-kit/auth"
 
 	"tellurion-strategy/internal/asset"
 )
@@ -91,6 +90,14 @@ func (f *fakeCompiler) Compile(ctx context.Context, req asset.CompileRequest) (a
 
 // ─── 装配 ──────────────────────────────────────────────────────
 
+// openTestAuthorizer 只服务 handler 语义用例：这些用例不覆盖鉴权姿态（那由
+// g1_test 的真 kit authorizer 覆盖）。旧装配借「无 secret 的 TokenService =
+// 就地放行」达成同一效果，该语义已按 2026-11-12 裁决删除（无 secret 一律
+// 503），所以这里显式用替身，而不是继续依赖假 secret。
+type openTestAuthorizer struct{}
+
+func (openTestAuthorizer) Authorize(*http.Request) (string, error) { return "", nil }
+
 func newServer(t *testing.T, compiler asset.Compiler) (*httptest.Server, *asset.Service) {
 	t.Helper()
 	n := 0
@@ -106,9 +113,8 @@ func newServer(t *testing.T, compiler asset.Compiler) (*httptest.Server, *asset.
 	if err != nil {
 		t.Fatalf("asset.New: %v", err)
 	}
-	// 无 secret 的 TokenService = 开放访问；受保护路由仍要经过闸（G1）。
 	api, err := New(svc,
-		WithAuthorizer(NewAuthorizer(auth.NewTokenService(auth.Config{}))),
+		WithAuthorizer(openTestAuthorizer{}),
 		WithPromotionLog(asset.NewMemoryPromotionLog()),
 	)
 	if err != nil {

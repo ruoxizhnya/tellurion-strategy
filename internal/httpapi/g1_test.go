@@ -70,6 +70,46 @@ func bearer(tok string) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + tok}
 }
 
+// 无 JWT_SECRET = 鉴权未配置：受保护路由必须 503 `auth_unavailable`，绝不
+// 放过任何写请求；读端点保持公开。
+//
+// 2026-11-12 实测矩阵第 1 格（无 secret + 回环）曾对 `POST /api/strategies`
+// 返回 **201**——回环豁免只该免「启动拒绝」，不该免写端点鉴权。这条用例把
+// 「无 secret 时写端点不得 2xx」钉死，删掉 `kitAuthorizer` 的拒绝分支即变红。
+func TestNoJWTSecretRejectsProtectedRoutes(t *testing.T) {
+	svc, err := asset.New(asset.Options{
+		Store:    asset.NewMemory(),
+		Compiler: &fakeCompiler{id: "tinygo-test", bytes: wasmWithImports("env.get_bar")},
+		IDGen:    func() string { return "st_no_secret" },
+		Now:      func() time.Time { return time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("asset.New: %v", err)
+	}
+	api, err := New(svc, WithAuthorizer(NewAuthorizer(auth.NewTokenService(auth.Config{}))))
+	if err != nil {
+		t.Fatalf("httpapi.New: %v", err)
+	}
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+
+	for _, tc := range writeRoutes() {
+		wantErrorCode(t, call(t, srv, tc.method, tc.path, nil, nil),
+			http.StatusServiceUnavailable, "auth_unavailable")
+	}
+	for _, path := range []string{
+		"/internal/strategies/st_x/artifacts",
+		"/internal/strategies/st_x/builds/job-1",
+	} {
+		wantErrorCode(t, call(t, srv, http.MethodPost, path, nil, nil),
+			http.StatusServiceUnavailable, "auth_unavailable")
+	}
+
+	// 读端点不受影响：请求进到 handler，返回业务错误而不是 401/403/503。
+	wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/st_nope/versions", nil, nil),
+		http.StatusNotFound, "strategy_not_found")
+}
+
 // ─── 策略表与档位 ──────────────────────────────────────────────
 
 func TestServedPolicyIsServiceOnly(t *testing.T) {

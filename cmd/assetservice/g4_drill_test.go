@@ -12,12 +12,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ruoxizhnya/tellurion-kit/auth"
-
 	"tellurion-strategy/internal/asset"
 	"tellurion-strategy/internal/compilerclient"
 	"tellurion-strategy/internal/httpapi"
 )
+
+// allowAllAuthorizer 是 drill 的装配替身：本文件验编译停机 / 恢复链路，不验
+// 鉴权姿态（后者由 internal/httpapi 的 g1 用例覆盖）。旧装配借「无 secret 的
+// TokenService = 就地放行」，该语义已按 2026-11-12 裁决删除（无 secret 一律
+// 503），所以显式用替身。
+type allowAllAuthorizer struct{}
+
+func (allowAllAuthorizer) Authorize(*http.Request) (string, error) { return "", nil }
 
 // recordingStore 记录最近一次落库的作业：G4 演练要能证明「503 之后那个
 // queued 行没有悬空」，而不只是看 HTTP 码。
@@ -52,10 +58,9 @@ func newDrillServer(t *testing.T, store asset.Store, compiler asset.Compiler) *h
 	if err != nil {
 		t.Fatalf("asset.New: %v", err)
 	}
-	// 无 secret 的 TokenService = 开放访问：内部端点仍经过闸，但就地放行
-	// （与 cmd/assetservice 在回环上的启动姿态一致）。
+	// 鉴权姿态由 internal/httpapi 覆盖；drill 只关心内部回写链路本身。
 	api, err := httpapi.New(svc,
-		httpapi.WithAuthorizer(httpapi.NewAuthorizer(auth.NewTokenService(auth.Config{}))),
+		httpapi.WithAuthorizer(allowAllAuthorizer{}),
 		httpapi.WithPromotionLog(asset.NewMemoryPromotionLog()),
 	)
 	if err != nil {

@@ -12,11 +12,16 @@ import (
 	"time"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
-	"github.com/ruoxizhnya/tellurion-kit/auth"
-
 	"tellurion-strategy/internal/asset"
 	"tellurion-strategy/internal/httpapi"
 )
+
+// allowAllAuthorizer 是回写链路用例的装配替身：鉴权姿态由 internal/httpapi
+// 的 g1 用例覆盖；旧装配借「无 secret 的 TokenService = 就地放行」，该语义已按
+// 2026-11-12 裁决删除（无 secret 一律 503），故显式用替身。
+type allowAllAuthorizer struct{}
+
+func (allowAllAuthorizer) Authorize(*http.Request) (string, error) { return "", nil }
 
 // ─── 语料与替身 ────────────────────────────────────────────────
 
@@ -99,9 +104,11 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("asset.New: %v", err)
 	}
-	// G1：内部回写端点受鉴权闸保护；无 secret 的 TokenService = 开放访问。
+	// G1：内部回写端点受鉴权闸保护。鉴权姿态由 internal/httpapi 覆盖，这里只
+	// 关心作业回写链路；旧装配借「无 secret = 就地放行」，该语义已按 2026-11-12
+	// 裁决删除（无 secret 一律 503），故显式用替身。
 	api, err := httpapi.New(svc,
-		httpapi.WithAuthorizer(httpapi.NewAuthorizer(auth.NewTokenService(auth.Config{}))))
+		httpapi.WithAuthorizer(allowAllAuthorizer{}))
 	if err != nil {
 		t.Fatalf("httpapi.New: %v", err)
 	}

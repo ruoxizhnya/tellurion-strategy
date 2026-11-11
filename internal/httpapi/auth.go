@@ -17,11 +17,11 @@ var (
 	ErrForbidden       = errors.New("insufficient role")
 )
 
-// Authorizer 是受保护路由的鉴权闸（policy.go 三条）。
+// Authorizer 是受保护路由的鉴权闸（policy.go 的八条写端点）。
 //
-// 放行时返回调用方身份（限流键）；无身份概念（开放访问）返回空串，由
-// `rateKey` 归一到 `open-access`。身份只用于限流分桶，不参与鉴权判定
-// ——鉴权结论仍由 Authorize 的 error 表达。
+// 放行时返回调用方身份（限流键）；`kitAuthorizer` 在开放访问（无 secret）
+// 时**不放行**，返回 errAuthUnavailable ⇒ 503。身份只用于限流分桶，不参与
+// 鉴权判定——鉴权结论仍由 Authorize 的 error 表达。
 type Authorizer interface {
 	Authorize(r *http.Request) (principal string, err error)
 }
@@ -44,9 +44,11 @@ type kitAuthorizer struct {
 
 func (a kitAuthorizer) Authorize(r *http.Request) (string, error) {
 	if a.svc == nil || !a.svc.Enabled() {
-		// 开放访问（无 secret + 回环/显式声明）由启动闸保证不会被暴露到网络；
-		// 这里与 kit 的 Guard 语义一致：关闭时就地放行。
-		return "", nil
+		// 无 secret = 鉴权未配置。受保护路由一律 503，**不是**就地放行：
+		// 启动闸的回环豁免只免「启动拒绝」，不免写端点鉴权。2026-11-12 实测
+		// 矩阵证明按旧语义「就地放行」时，回环上 `POST /api/strategies` 返回
+		// 201——闸门形同虚设。
+		return "", fmt.Errorf("%w: JWT secret is not configured", errAuthUnavailable)
 	}
 	key := kithttp.RouteKey(r)
 	rule, declared := servedPolicy.Rule(key)
@@ -101,6 +103,9 @@ func (a *API) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, ErrUnauthenticated)
 		case errors.Is(err, ErrForbidden):
 			writeError(w, ErrForbidden)
+		case errors.Is(err, errAuthUnavailable):
+			// 未配置 secret：503，不记成 authorizer 异常（每个写请求都会命中）。
+			writeError(w, err)
 		default:
 			log.Printf("httpapi: authorizer error: %v", err)
 			writeError(w, fmt.Errorf("%w: %v", errAuthUnavailable, err))
