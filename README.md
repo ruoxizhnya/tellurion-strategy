@@ -1,5 +1,7 @@
 # tellurion-strategy
 
+> 5 分钟了解本服务：[SERVICE.md](SERVICE.md)
+
 > module: `tellurion-strategy` ｜ 状态：**✅ 资产服务落地（2026-11-11 复核）**——13 个业务端点（10 条公开不挂闸 + `/promote` +
 > 2 条 `/internal/*` 挂 service 闸）+ 2 条探针跑在 PG Store（启动迁移）上；两级缓存 / latest TTL / build job 持久化 /
 > 14 个内置策略登记 / 真 TinyGo 0.34.0 工具链 / 跨进程编译闭环已落。`storage=url` 与 `carrier=external` 的 hash 语义是**非目标**
