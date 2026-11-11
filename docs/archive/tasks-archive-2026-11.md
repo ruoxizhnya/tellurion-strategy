@@ -18,6 +18,7 @@
 | SVC-STRAT-G2 | 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036） | 2026-11-07 | —（原文未记） | [原文](#SVC-STRAT-G2) |
 | SVC-STRAT-G4 | 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036） | 2026-11-10 | —（原文未记） | [原文](#SVC-STRAT-G4) |
 | STRAT-GRACEFUL-SHUTDOWN | 资产服务无优雅停机，SIGTERM 直接掐断在途请求 | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-GRACEFUL-SHUTDOWN`） | [原文](#STRAT-GRACEFUL-SHUTDOWN) |
+| STRAT-AUTH-ADR | 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-AUTH-ADR`） | [原文](#STRAT-AUTH-ADR)；[ADR-0005](adr/0005-鉴权姿态与端口隔离边界.md) |
 
 ---
 
@@ -561,4 +562,22 @@
 > - **验收（真实输出，本机 Windows）**：`go build ./...`、`go vet ./...` 退出码 0；`go test ./... -count=1` 全绿（7 包，`cmd/assetservice 0.426s`）；`TestServeWithContextDrainsInFlightRequest` 与 `TestServeWithContextDrainTimeoutIsNonZeroExit` PASS，日志出现 `termination signal received; draining in-flight requests drain=5s|100ms`。
 > - **破坏验证**：把 `serveWithContext` 改成裸 `return srv.Serve(ln)`（去掉信号捕获与 Shutdown）⇒ 两条用例同时红（`serveWithContext did not return after the clean drain` / `...after the drain window elapsed`，各 5s 超时）；逐字节还原后两条复绿。
 > - **如实登记**：未在本机对**真实进程**发 SIGTERM 做黑盒演练（Windows 无 unix SIGTERM 语义，`os/signal` 腿由 `serveWithContext` 等价覆盖）；Linux 容器内的 SIGTERM 行为由同一 `signal.NotifyContext` 路径承载，未在容器内单独复跑。
+
+<a id="STRAT-AUTH-ADR"></a>
+### STRAT-AUTH-ADR · 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema [P2] ✅（2026-11-12）
+
+- **① 目标**：给本仓的鉴权姿态补一条 ADR，把「10 条读端点公开 + 端口隔离、3 条写端点 service-token、`DecideStartup` 启动闸、promote 额外 `X-Actor`」这套**决定**固化成可追溯的架构决策，而不是只留在接口文档的行为描述里。
+- **② 上下文（2026-11-11 全面审查 W2-F4，证据 ODR-069 `tellurion-docs:docs/archive/odr/odr-069-audit-wave2-core-architecture.md`）**：`docs/api-schema.md:78-95` 已完整描述鉴权行为（service token = kit `IssueServiceToken`、无/坏 token→401、角色不对→403、10 条公开端点靠 `127.0.0.1:8090` 端口隔离、`DecideStartup` 拒「漏配 secret 又非回环」、限流 50rps/突发200、promote 要 `X-Actor` 否则 400 `actor_required`）。但 `docs/adr/` 只有 `0001`~`0004`，**无一条是鉴权姿态 ADR**（`0004-core消费边界与promote归属` 只裁 promote 归属，不覆盖整体鉴权边界）。对照 risk/data/analytics 均有鉴权 ADR（ADR-0005/0006 族），本仓缺这一条。
+- **③ 要求**：① 新增 `docs/adr/0005-鉴权姿态与端口隔离边界.md`（编号续 0004），记录：为何读端点公开（单人自托管 + 回环/集群内端口隔离）、为何写端点只认 `service`、`DecideStartup` 的 fail-closed 判据、promote 的 `X-Actor` 与审计；② 显式 cross-ref `ADR-0004`（promote 归属）与 kit `auth/httpadapter`；③ `docs/api-schema.md` 鉴权节加一行指回该 ADR；④ `docs/adr/README.md` 索引登记。
+- **④ 约束与非目标**：**不改任何鉴权代码与策略表**（本单纯文档/决策固化）；不新增端点；不放宽现有 fail-closed；不把 api-schema 的行为表整段抄进 ADR（ADR 写「为什么这么定」，行为表留在 api-schema）。
+- **⑤ 验收**：ADR-0005 存在且 Status=Accepted、含 Context/Decision/Consequences；api-schema 鉴权节有指回链接；`docs/adr/README.md` 索引含 0005；`python ../tellurion-docs/tools/check_doc_links.py`（或本仓等价链接巡检）活跃层 0 断链。
+- **⑥ 边界**：本仓 `docs/adr/` 与 `docs/api-schema.md` 鉴权节；鉴权实现归 kit，跨仓服务间角色口径归 core/各服务 ADR。
+- **owner**：待定
+
+> **施工记录（2026-11-12）**：
+> - **落点**：新增 `docs/adr/0005-鉴权姿态与端口隔离边界.md`（状态=已裁决 / Accepted，含场景 Context、决策 Decision、理由、代价 / 后果 Consequences、与 kit JWT 及其他仓关系、替代关系）；`docs/adr/README.md` 索引登记 0005；`docs/api-schema.md`「鉴权与限流（G1）」节顶部加指回 ADR-0005 的决策来源段。**未改任何鉴权代码与策略表。**
+> - **前提证伪（如实登记，与工单措辞不一致）**：工单写「10 条**读**端点公开」，实测 `internal/httpapi/api.go:112-133` 的 10 条公开端点里只有 5 条是读（`versions` / `promotions` / `builds/{job_id}` / `resolve` / `artifact`），另 5 条是**写**（create / source / build / validate / deprecate）；受保护的 3 条才是 promote + 2 条 `/internal/*`（`policy.go`）。ADR 按**实测事实**写，并把「公开写端点在端口隔离失效时完全开放」「启动闸只覆盖无 secret 组合」列为**残余风险**，明确「若要求这些端点也需身份，先改 `policy.go` 与文档并另立单，本轮不改代码」——不在 ADR 里把工单的错误措辞固化成"读端点公开"。
+> - **与既有 ADR 的关系**：cross-ref ADR-0004（promote 归属 / 部署入口解释）与 kit `auth/httpadapter`（`DecideStartup` / `ServiceRole`）；按派单要求**不声称跨仓统一**——broker 的写侧静态 token / 读侧开放是它自己 ADR 的分叉例外，本 ADR 只写本仓姿态。
+> - **验收（真实输出）**：`python ../tellurion-docs/tools/check_doc_links.py` → `活跃层：247 条链接，0 条断`（历史层 758 条 / 174 断，只统计不判红）；ADR-0005 状态行含 `已裁决 / Accepted`；api-schema 与 README 索引均有指回/登记。
+> - **破坏验证（链接层，真实执行）**：`check_doc_links.py` 把**指向** `docs/adr` 的链接归入"历史层、不判红"（实测把 api-schema 里的目标改成 `0005-not-exist.md` 后活跃层仍是 `0 断`），所以另用存在性扫描（`docs/*.md` + `docs/adr/README.md` 中所有 `](adr/...)` 目标逐个 `Test-Path`）：正常态 `broken count: 0`；把 ADR 文件临时重命名为 `0005-tmp-break.md` ⇒ `BROKEN api-schema.md -> adr/0005-鉴权姿态与端口隔离边界.md`、`broken count: 1`；改回原名后复绿 `0`。
 

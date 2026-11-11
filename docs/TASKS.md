@@ -12,16 +12,6 @@ verified-by: 2026-11-11 全面审查 W7 台账立单（A5 授权）——新立 
 
 ## 一、未做 / 挂起 / 外部依赖
 
-### STRAT-AUTH-ADR · 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema [P2] ⬜
-
-- **① 目标**：给本仓的鉴权姿态补一条 ADR，把「10 条读端点公开 + 端口隔离、3 条写端点 service-token、`DecideStartup` 启动闸、promote 额外 `X-Actor`」这套**决定**固化成可追溯的架构决策，而不是只留在接口文档的行为描述里。
-- **② 上下文（2026-11-11 全面审查 W2-F4，证据 ODR-069 `tellurion-docs:docs/archive/odr/odr-069-audit-wave2-core-architecture.md`）**：`docs/api-schema.md:78-95` 已完整描述鉴权行为（service token = kit `IssueServiceToken`、无/坏 token→401、角色不对→403、10 条公开端点靠 `127.0.0.1:8090` 端口隔离、`DecideStartup` 拒「漏配 secret 又非回环」、限流 50rps/突发200、promote 要 `X-Actor` 否则 400 `actor_required`）。但 `docs/adr/` 只有 `0001`~`0004`，**无一条是鉴权姿态 ADR**（`0004-core消费边界与promote归属` 只裁 promote 归属，不覆盖整体鉴权边界）。对照 risk/data/analytics 均有鉴权 ADR（ADR-0005/0006 族），本仓缺这一条。
-- **③ 要求**：① 新增 `docs/adr/0005-鉴权姿态与端口隔离边界.md`（编号续 0004），记录：为何读端点公开（单人自托管 + 回环/集群内端口隔离）、为何写端点只认 `service`、`DecideStartup` 的 fail-closed 判据、promote 的 `X-Actor` 与审计；② 显式 cross-ref `ADR-0004`（promote 归属）与 kit `auth/httpadapter`；③ `docs/api-schema.md` 鉴权节加一行指回该 ADR；④ `docs/adr/README.md` 索引登记。
-- **④ 约束与非目标**：**不改任何鉴权代码与策略表**（本单纯文档/决策固化）；不新增端点；不放宽现有 fail-closed；不把 api-schema 的行为表整段抄进 ADR（ADR 写「为什么这么定」，行为表留在 api-schema）。
-- **⑤ 验收**：ADR-0005 存在且 Status=Accepted、含 Context/Decision/Consequences；api-schema 鉴权节有指回链接；`docs/adr/README.md` 索引含 0005；`python ../tellurion-docs/tools/check_doc_links.py`（或本仓等价链接巡检）活跃层 0 断链。
-- **⑥ 边界**：本仓 `docs/adr/` 与 `docs/api-schema.md` 鉴权节；鉴权实现归 kit，跨仓服务间角色口径归 core/各服务 ADR。
-- **owner**：待定
-
 ### STRAT-READYZ-PROBE · 健康探针是 TCP `nc -z`，端口开着就算健康（活≠就绪）[P3] ⬜
 
 - **① 目标**：把本仓的健康探针从「TCP 端口可连」升级为「HTTP 端点真应答」，让容器在 HTTP 服务未起 / 迁移未完成时不被误判为健康。
