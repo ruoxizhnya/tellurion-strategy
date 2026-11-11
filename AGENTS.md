@@ -7,7 +7,8 @@
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
 **状态**：✅ 资产服务落地（2026-11-12 复核）——`internal/asset`（Memory + PG Store、启动迁移、两级缓存、latest TTL、job 持久化、
-14 个内置策略登记、so 符号校验）+ `internal/httpapi`（13 个业务端点：10 条公开不挂闸 = **5 读 + 5 写**，写侧已裁决收紧 + `/promote` + 2 条 `/internal/*`；另有 2 条探针）
+14 个内置策略登记、so 符号校验）+ `internal/httpapi`（13 个业务端点：**5 条公开读** + **8 条受保护写**——5 条资产写
+create / source / build / validate / deprecate 已收紧，加 `/promote` + 2 条 `/internal/*`，均只认 `service`；另有 2 条探针）
 + `internal/compile`（真 TinyGo 0.34.0 锁与 `-no-debug`）
 + `internal/compilerjob` + `cmd/*` 已落地。G5（2026-10-24）补了编译 job 的**队列 / 重试 / 限并发**（`compilerjob.Queue`，
 状态词表与 `strategy_build_jobs` 同一套）。QT-41c（2026-10-25）收口了编译链路跨进程闭环：
@@ -18,6 +19,9 @@
 闸（`internal/httpapi/policy.go`，只认 `service`）；promote 要求 `X-Actor` 并落 `strategy.strategy_promotions`
 审计；新增公开 `/healthz` / `/readyz`；按身份令牌桶限流（探针豁免，鉴权先于限流）；版本列表分页；
 build 幂等键（同 `(strategy, version, toolchain)` 未终态作业复用 `job_id`）。
+**STRAT-WRITE-AUTH-ROLLOUT（2026-11-12）**：5 条资产写端点并入 `servedPolicy`（只认 `service`），跨仓两步走——
+agent 侧带 token 能力先发布（`tellurion-agent@a59631e`），本仓随后收紧；本地直跑必须由 core `tools/issue_service_token.go`
+签发 token 并注入 `JWT_SECRET` + `STRATEGY_ASSET_TOKEN`（见 `docs/runbook.md`）。
 **SVC-STRAT-G4（2026-11-07 落地，✅ 2026-11-10）**：编译链路七类失败语义成文（`docs/api-schema.md` §2.2）、重试边界（§3.1）、
 运维手册 `docs/runbook.md`；`cmd/compiler` 子进程加显式硬上界 `-compiler-process-timeout`（默认 20m、最大 1h，
 走 `exec.CommandContext`），到点落 `failed + error_code=compile_timeout`，不留 `running`。

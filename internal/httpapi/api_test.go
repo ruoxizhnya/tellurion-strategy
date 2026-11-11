@@ -201,9 +201,10 @@ func wantErrorCode(t *testing.T, got response, status int, wantCode string) {
 }
 
 // createDefinition 走 POST /api/strategies 并返回 id。
-func createDefinition(t *testing.T, srv *httptest.Server, body map[string]any) string {
+// 写端点在 G1 收紧后要过鉴权闸：启用鉴权的服务必须给 headers（服务 token）。
+func createDefinition(t *testing.T, srv *httptest.Server, headers map[string]string, body map[string]any) string {
 	t.Helper()
-	resp := call(t, srv, http.MethodPost, "/api/strategies", body, nil)
+	resp := call(t, srv, http.MethodPost, "/api/strategies", body, headers)
 	wantStatus(t, resp, http.StatusCreated)
 	out := decodeObject(t, resp.Body)
 	id, _ := out["id"].(string)
@@ -213,9 +214,9 @@ func createDefinition(t *testing.T, srv *httptest.Server, body map[string]any) s
 	return id
 }
 
-func createWasm(t *testing.T, srv *httptest.Server, abi, scope string) string {
+func createWasm(t *testing.T, srv *httptest.Server, headers map[string]string, abi, scope string) string {
 	t.Helper()
-	return createDefinition(t, srv, map[string]any{
+	return createDefinition(t, srv, headers, map[string]any{
 		"carrier":     "wasm",
 		"abi_version": abi,
 		"scope":       scope,
@@ -228,10 +229,10 @@ func createWasm(t *testing.T, srv *httptest.Server, abi, scope string) string {
 	})
 }
 
-func putSource(t *testing.T, srv *httptest.Server, id, source string) string {
+func putSource(t *testing.T, srv *httptest.Server, headers map[string]string, id, source string) string {
 	t.Helper()
 	resp := call(t, srv, http.MethodPut, "/api/strategies/"+id+"/source",
-		map[string]string{"source": source}, nil)
+		map[string]string{"source": source}, headers)
 	wantStatus(t, resp, http.StatusOK)
 	hash, _ := decodeObject(t, resp.Body)["version_hash"].(string)
 	if len(hash) != 64 {
@@ -278,8 +279,8 @@ func TestAPI_WasmLifecycle(t *testing.T) {
 	wasm := wasmWithImports("env.get_bar", "env.emit_target2")
 	srv, svc := newServer(t, &fakeCompiler{id: "tinygo-test", bytes: wasm})
 
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy\nfunc OnBar() {}")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy\nfunc OnBar() {}")
 
 	// 只有源码：W7 给一行 status=source，且空列表必须是 []。
 	resp := call(t, srv, http.MethodGet, "/api/strategies/"+id+"/versions", nil, nil)
@@ -292,7 +293,7 @@ func TestAPI_WasmLifecycle(t *testing.T) {
 		t.Fatalf("source row must not carry an artifact_hash: %s", resp.Body)
 	}
 
-	empty := createWasm(t, srv, "on_bar/2", "symbol")
+	empty := createWasm(t, srv, nil, "on_bar/2", "symbol")
 	resp = call(t, srv, http.MethodGet, "/api/strategies/"+empty+"/versions", nil, nil)
 	wantStatus(t, resp, http.StatusOK)
 	if got := strings.TrimSpace(string(resp.Body)); got != "[]" {
@@ -432,8 +433,8 @@ func TestAPI_WasmLifecycle(t *testing.T) {
 
 func TestAPI_RegisterArtifact(t *testing.T) {
 	srv, _ := newServer(t, nil)
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 	wasm := wasmWithImports("env.get_bar", "env.emit_target2")
 	hash := asset.ArtifactHash(wasm)
 
@@ -493,8 +494,8 @@ func TestAPI_RegisterArtifact(t *testing.T) {
 
 func TestAPI_RegisterArtifactFailsClosed(t *testing.T) {
 	srv, _ := newServer(t, nil)
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 	wasm := wasmWithImports("env.get_bar")
 
 	// path id 与 body id 不一致。
@@ -552,13 +553,13 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 	compiler := &fakeCompiler{id: "tinygo-test", bytes: wasmWithImports("env.get_bar")}
 	srv, _ := newServer(t, compiler)
 
-	wasmID := createWasm(t, srv, "on_bar/2", "market")
-	wasmVersion := putSource(t, srv, wasmID, "package strategy")
+	wasmID := createWasm(t, srv, nil, "on_bar/2", "market")
+	wasmVersion := putSource(t, srv, nil, wasmID, "package strategy")
 
-	builtinID := createDefinition(t, srv, map[string]any{
+	builtinID := createDefinition(t, srv, nil, map[string]any{
 		"carrier": "builtin", "scope": "symbol", "entry": "OnBar",
 	})
-	builtinVersion := putSource(t, srv, builtinID, "package strategy")
+	builtinVersion := putSource(t, srv, nil, builtinID, "package strategy")
 
 	validRef := "other@" + strings.Repeat("a", 64)
 
@@ -630,8 +631,8 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 
 func TestAPI_BuildWithoutCompilerIsUnavailable(t *testing.T) {
 	srv, _ := newServer(t, nil)
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 
 	wantErrorCode(t, call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build",
 		map[string]string{"version_hash": version}, nil),

@@ -75,7 +75,12 @@ func bearer(tok string) map[string]string {
 func TestServedPolicyIsServiceOnly(t *testing.T) {
 	entries := ServedPolicyEntries()
 	want := []string{
+		"POST /api/strategies",
+		"PUT /api/strategies/{id}/source",
+		"POST /api/strategies/{id}/build",
+		"POST /api/strategies/{id}/versions/{hash}/validate",
 		"POST /api/strategies/{id}/versions/{hash}/promote",
+		"POST /api/strategies/{id}/versions/{hash}/deprecate",
 		"POST /internal/strategies/{id}/artifacts",
 		"POST /internal/strategies/{id}/builds/{job_id}",
 	}
@@ -99,6 +104,11 @@ func TestServedPolicyIsServiceOnly(t *testing.T) {
 func TestProtectedRoutesRejectMissingToken(t *testing.T) {
 	srv, _, _, _ := newAuthServer(t, nil)
 	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/strategies"},
+		{http.MethodPut, "/api/strategies/st_x/source"},
+		{http.MethodPost, "/api/strategies/st_x/build"},
+		{http.MethodPost, "/api/strategies/st_x/versions/" + strings.Repeat("a", 64) + "/validate"},
+		{http.MethodPost, "/api/strategies/st_x/versions/" + strings.Repeat("a", 64) + "/deprecate"},
 		{http.MethodPost, "/api/strategies/st_x/versions/" + strings.Repeat("a", 64) + "/promote"},
 		{http.MethodPost, "/internal/strategies/st_x/artifacts"},
 		{http.MethodPost, "/internal/strategies/st_x/builds/job-1"},
@@ -114,6 +124,11 @@ func TestProtectedRoutesRejectNonServiceRole(t *testing.T) {
 	srv, _, tokens, _ := newAuthServer(t, nil)
 	h := bearer(adminToken(t, tokens))
 	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/strategies"},
+		{http.MethodPut, "/api/strategies/st_x/source"},
+		{http.MethodPost, "/api/strategies/st_x/build"},
+		{http.MethodPost, "/api/strategies/st_x/versions/" + strings.Repeat("a", 64) + "/validate"},
+		{http.MethodPost, "/api/strategies/st_x/versions/" + strings.Repeat("a", 64) + "/deprecate"},
 		{http.MethodPost, "/api/strategies/st_x/versions/" + strings.Repeat("a", 64) + "/promote"},
 		{http.MethodPost, "/internal/strategies/st_x/artifacts"},
 		{http.MethodPost, "/internal/strategies/st_x/builds/job-1"},
@@ -143,19 +158,84 @@ func TestProtectedRoutesAcceptServiceToken(t *testing.T) {
 	}
 }
 
-// 其余 10 条公开端点在**启用鉴权**的进程里仍然不要求 token——它们靠端口隔离。
-// 一旦有人把其中任一条挪进策略表，这条会红。
-func TestOpenRoutesRemainUngated(t *testing.T) {
+// 5 条读端点在**启用鉴权**的进程里仍然不要求 token——它们靠端口隔离做边界。
+// 一旦有人「顺手把读也一起闸了」，这条会红：读面不带写入能力，加闸只会让
+// core / UI 的读链路无故 401。
+func TestReadRoutesRemainPublic(t *testing.T) {
 	srv, _, _, _ := newAuthServer(t, nil)
-	resp := call(t, srv, http.MethodGet, "/api/strategies/st_nope/versions", nil, nil)
-	wantErrorCode(t, resp, http.StatusNotFound, "strategy_not_found")
+	for _, path := range []string{
+		"/api/strategies/st_nope/versions",
+		"/api/strategies/st_nope/promotions",
+		"/api/strategies/st_nope/builds/job_nope",
+		"/api/strategies/st_nope/resolve",
+		"/api/strategies/st_nope/versions/" + strings.Repeat("a", 64) + "/artifact",
+	} {
+		resp := call(t, srv, http.MethodGet, path, nil, nil)
+		if resp.Status == http.StatusUnauthorized || resp.Status == http.StatusForbidden {
+			t.Fatalf("GET %s must stay public, got %d (body: %s)", path, resp.Status, resp.Body)
+		}
+	}
+	// 并且请求真的进了 handler（业务错误），不是被闸挡下。
+	wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/st_nope/versions", nil, nil),
+		http.StatusNotFound, "strategy_not_found")
+}
 
-	resp = call(t, srv, http.MethodGet, "/api/strategies/st_nope/resolve", nil, nil)
-	wantErrorCode(t, resp, http.StatusNotFound, "strategy_not_found")
+// 写侧判据之二：坏 token（不是合法 JWT）在 5 条写端点上一律 401。
+func TestWriteRoutesRejectBadToken(t *testing.T) {
+	srv, _, _, _ := newAuthServer(t, nil)
+	for _, tc := range writeRoutes() {
+		t.Run(tc.path, func(t *testing.T) {
+			wantErrorCode(t, call(t, srv, tc.method, tc.path, nil,
+				map[string]string{"Authorization": "Bearer not-a-jwt"}),
+				http.StatusUnauthorized, "unauthenticated")
+		})
+	}
+}
 
-	resp = call(t, srv, http.MethodPost, "/api/strategies",
-		map[string]any{"carrier": "wasm", "abi_version": "on_bar/2", "scope": "market", "entry": "OnBar"}, nil)
-	wantStatus(t, resp, http.StatusCreated)
+// 写侧判据之三：service token 下 create / source / build / validate / deprecate
+// 各一次真成功——闸门只认身份，不改业务语义。
+func TestWriteRoutesAcceptServiceToken(t *testing.T) {
+	compiler := &fakeCompiler{id: "tinygo-test", bytes: wasmWithImports("env.get_bar")}
+	srv, svc, tokens, _ := newAuthServer(t, compiler)
+	h := bearer(serviceToken(t, tokens))
+
+	id := createWasm(t, srv, h, "on_bar/2", "market")
+	version := putSource(t, srv, h, id, "package strategy")
+
+	resp := call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build",
+		map[string]string{"version_hash": version, "toolchain": "tinygo-test"}, h)
+	wantStatus(t, resp, http.StatusAccepted)
+	jobID, _ := decodeObject(t, resp.Body)["job_id"].(string)
+	if jobID == "" {
+		t.Fatalf("build returned no job_id: %s", resp.Body)
+	}
+	if job := waitJob(t, svc, jobID); job.State != asset.JobSucceeded {
+		t.Fatalf("build job state = %s (%s)", job.State, job.Error)
+	}
+
+	resp = call(t, srv, http.MethodPost, "/api/strategies/"+id+"/versions/"+version+"/validate", nil, h)
+	wantStatus(t, resp, http.StatusOK)
+
+	// deprecate 的前置是 promoted（状态机），所以中间补一次 promote。
+	promoteH := bearer(serviceToken(t, tokens))
+	promoteH["X-Actor"] = "alice"
+	resp = call(t, srv, http.MethodPost, "/api/strategies/"+id+"/versions/"+version+"/promote", nil, promoteH)
+	wantStatus(t, resp, http.StatusOK)
+
+	resp = call(t, srv, http.MethodPost, "/api/strategies/"+id+"/versions/"+version+"/deprecate", nil, h)
+	wantStatus(t, resp, http.StatusOK)
+}
+
+// writeRoutes 是 5 条写端点的表驱动清单（判据共用，避免各处漏一条）。
+func writeRoutes() []struct{ method, path string } {
+	hash := strings.Repeat("a", 64)
+	return []struct{ method, path string }{
+		{http.MethodPost, "/api/strategies"},
+		{http.MethodPut, "/api/strategies/st_x/source"},
+		{http.MethodPost, "/api/strategies/st_x/build"},
+		{http.MethodPost, "/api/strategies/st_x/versions/" + hash + "/validate"},
+		{http.MethodPost, "/api/strategies/st_x/versions/" + hash + "/deprecate"},
+	}
 }
 
 // ─── promote 的审批人与审计 ─────────────────────────────────────
@@ -165,8 +245,8 @@ func TestPromoteRequiresActorAndWritesAudit(t *testing.T) {
 	srv, _, tokens, audit := newAuthServer(t, compiler)
 	svcHeader := bearer(serviceToken(t, tokens))
 
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, svcHeader, "on_bar/2", "market")
+	version := putSource(t, srv, svcHeader, id, "package strategy")
 	resp := call(t, srv, http.MethodPost, "/internal/strategies/"+id+"/artifacts",
 		registerBody(id, version, compiler.bytes, compiler.imports, compiler.id), svcHeader)
 	wantStatus(t, resp, http.StatusCreated)
@@ -175,7 +255,7 @@ func TestPromoteRequiresActorAndWritesAudit(t *testing.T) {
 		t.Fatalf("artifact registration returned no artifact_hash: %s", resp.Body)
 	}
 	wantStatus(t, call(t, srv, http.MethodPost,
-		"/api/strategies/"+id+"/versions/"+version+"/validate", nil, nil), http.StatusOK)
+		"/api/strategies/"+id+"/versions/"+version+"/validate", nil, svcHeader), http.StatusOK)
 
 	promotePath := "/api/strategies/" + id + "/versions/" + version + "/promote"
 
@@ -334,10 +414,11 @@ func TestRateLimitKeepsAuthFirst(t *testing.T) {
 // ─── 分页 / build 幂等键 ───────────────────────────────────────
 
 func TestListVersionsPagination(t *testing.T) {
-	srv, _, _, _ := newAuthServer(t, nil)
-	id := createWasm(t, srv, "on_bar/2", "market")
+	srv, _, tokens, _ := newAuthServer(t, nil)
+	h := bearer(serviceToken(t, tokens))
+	id := createWasm(t, srv, h, "on_bar/2", "market")
 	for _, src := range []string{"package strategy // one", "package strategy // two", "package strategy // three"} {
-		putSource(t, srv, id, src)
+		putSource(t, srv, h, id, src)
 	}
 	base := "/api/strategies/" + id + "/versions"
 
@@ -392,12 +473,13 @@ func (c *blockingCompiler) count() int {
 
 func TestSubmitBuildIsIdempotentWhileActive(t *testing.T) {
 	compiler := &blockingCompiler{started: make(chan struct{}), release: make(chan struct{})}
-	srv, _, _, _ := newAuthServer(t, compiler)
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	srv, _, tokens, _ := newAuthServer(t, compiler)
+	h := bearer(serviceToken(t, tokens))
+	id := createWasm(t, srv, h, "on_bar/2", "market")
+	version := putSource(t, srv, h, id, "package strategy")
 
 	body := map[string]string{"version_hash": version}
-	first := call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build", body, nil)
+	first := call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build", body, h)
 	wantStatus(t, first, http.StatusAccepted)
 	firstJob, _ := decodeObject(t, first.Body)["job_id"].(string)
 	if firstJob == "" {
@@ -405,7 +487,7 @@ func TestSubmitBuildIsIdempotentWhileActive(t *testing.T) {
 	}
 	<-compiler.started
 
-	second := call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build", body, nil)
+	second := call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build", body, h)
 	wantStatus(t, second, http.StatusAccepted)
 	secondJob, _ := decodeObject(t, second.Body)["job_id"].(string)
 	if secondJob != firstJob {

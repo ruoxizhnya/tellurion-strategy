@@ -56,6 +56,23 @@ $p = Start-Process -FilePath "$dir\assetservice.exe" -ArgumentList @(
   实际生效值 = min(批次预算, 该值)。批次预算 = `maxAttempts × (timeout + backoff) + 1min`。
 - 无 `-jwt-secret` 时只在回环地址开放访问；非回环绑定会被启动闸拒绝。生产必须给
   `JWT_SECRET` / `AUTH_JWT_SECRET` 或显式 `-insecure-exposure`。
+- **写端点从 2026-11-12 起要 service token**：5 条资产写（create / source / build / validate / deprecate）
+  与 `/promote`、2 条 `/internal/*` 全部只认 `role=service`（`internal/httpapi/policy.go`）。
+  回环豁免**只免除启动拒绝**，不会让受保护路由放行：没配 secret 时受保护路由 503 `auth_unavailable`，
+  配了 secret 但请求不带 token 时 401 `unauthenticated`——**没有「没配 secret 就放行」的后门**。
+  本地直跑要给写链路放行，按三步配（secret 只走 env，不进 argv）：
+
+  ```powershell
+  # 1) core 仓签发：stdout 只有 token；sub 必须是 service:<repo>
+  $env:JWT_SECRET = '<shared secret>'
+  $env:STRATEGY_ASSET_TOKEN = go run tools/issue_service_token.go -sub service:agent -ttl 720h
+
+  # 2) 起 assetservice 时给同一个 secret（-jwt-secret 或 JWT_SECRET）
+  # 3) 调用侧带 Authorization: Bearer <token>；agent copilot 登记链直接从
+  #    STRATEGY_ASSET_TOKEN 读同一个值（config/ai-service.yaml 的 strategy_asset.token）
+  ```
+
+  读端点（versions / promotions / builds / resolve / artifact）不需要 token，保持不变。
 - 生产把 `-dsn` 换成 `STRATEGY_DATABASE_URL`（或 `-dsn`）；启动时先执行幂等 DDL 再监听。
 
 健康检查：
@@ -201,12 +218,13 @@ $p = Start-Process -FilePath "$dir\assetservice.exe" -ArgumentList @(
   '-compiler-toolchain-path',"$dir\no-such-tinygo.exe",
   '-compiler-toolchain-lock',"$dir\toolchains.lock"
 ) -PassThru
-# 2) 建定义 + 传源码（JSON 走文件）
-curl.exe -s -X POST http://127.0.0.1:18090/api/strategies -H "Content-Type: application/json" --data-binary "@$dir\create.json"
-curl.exe -s -X PUT  http://127.0.0.1:18090/api/strategies/$id/source -H "Content-Type: application/json" --data-binary "@$dir\source.json"
+# 2) 建定义 + 传源码（JSON 走文件；写端点要 service token，见 §1.2）
+$h = @('-H','Content-Type: application/json','-H',"Authorization: Bearer $env:STRATEGY_ASSET_TOKEN")
+curl.exe -s -X POST http://127.0.0.1:18090/api/strategies @h --data-binary "@$dir\create.json"
+curl.exe -s -X PUT  http://127.0.0.1:18090/api/strategies/$id/source @h --data-binary "@$dir\source.json"
 # 3) build
 curl.exe -s -o "$dir\buildresp.json" -w "%{http_code}" -X POST `
-  http://127.0.0.1:18090/api/strategies/$id/build -H "Content-Type: application/json" --data-binary "@$dir\buildreq.json"
+  http://127.0.0.1:18090/api/strategies/$id/build @h --data-binary "@$dir\buildreq.json"
 ```
 
 实测输出：
@@ -217,6 +235,8 @@ BUILD_HTTP=503
 ```
 
 - 503 而不是 202/200：**没有静默成功**。
+- 2026-11-07 实测时写端点尚未挂闸；2026-11-12 收紧后同一组请求需按 §1.2 带 service token
+  （不带会先得到 401，判据「503 `compile_unavailable`」需在带 token 的前提下观察）。
 - 同一进程内由 `asset.Service` 把刚落的 `queued` 行收口为 `failed +
   compile_unavailable`；该断言由单测 `TestG4Drill_MissingCompilerBinFailsClosedThenRecovers`
   读取落库行验证（`state=failed` / `error_code=compile_unavailable`，见 §5.3）。
@@ -277,7 +297,8 @@ curl.exe -s -X POST "http://127.0.0.1:18090/internal/strategies/<strategy_id>/bu
   --data-binary "@$dir\close.json"
 ```
 
-- 无 `JWT_SECRET` 的回环部署可省 `Authorization`；生产必须带 service token。
+- 无 `JWT_SECRET` 的回环部署**不再**能省 `Authorization`：内部面自 2026-11-12 起只认 service token
+  （无 secret 时 503 `auth_unavailable`，见 §1.2）。生产与本地都必须带 service token。
 - 归因码建议：进程挂死用 `compile_failed`（若确认是超时上界触发但回写丢失，可人工记
   `compile_timeout`；两者都是终态失败，区别只在报表口径）。
 - 404 `job_not_found`：job_id 或 strategy_id 不对（服务不跨策略枚举）。

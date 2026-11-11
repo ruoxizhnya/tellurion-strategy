@@ -20,6 +20,7 @@
 | STRAT-GRACEFUL-SHUTDOWN | 资产服务无优雅停机，SIGTERM 直接掐断在途请求 | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-GRACEFUL-SHUTDOWN`） | [原文](#STRAT-GRACEFUL-SHUTDOWN) |
 | STRAT-AUTH-ADR | 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-AUTH-ADR`） | [原文](#STRAT-AUTH-ADR)；[ADR-0005](adr/0005-鉴权姿态与端口隔离边界.md) |
 | STRAT-READYZ-PROBE | 健康探针是 TCP `nc -z`，端口开着就算健康（活≠就绪） | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-READYZ-PROBE`） | [原文](#STRAT-READYZ-PROBE) |
+| STRAT-WRITE-AUTH-ROLLOUT | 5 条公开写端点收紧为 service token（跨仓两步走） | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-WRITE-AUTH-ROLLOUT`；agent 侧前置 `tellurion-agent@a59631e`） | [原文](#STRAT-WRITE-AUTH-ROLLOUT)；[ADR-0005](adr/0005-鉴权姿态与端口隔离边界.md) |
 
 ---
 
@@ -600,4 +601,40 @@
 > - **破坏验证（真实执行，未改镜像）**：同一个镜像、同一个内存模式容器，用 `docker run --health-cmd "nc -z 127.0.0.1 8090 || exit 1"` 复现旧探针 ⇒ `"Status":"healthy","FailingStreak":0`（四段命中 `ExitCode:0`）——**端口开即 healthy 的假绿当场复现**；由于新探针本就写在镜像/ compose 里，移除 break 容器即还原（重建默认探针容器后仍 unhealthy，见上一条）。
 > - **清场**：两个容器 `docker rm -f`、临时镜像 `docker rmi` 均成功；`git status` 仅剩本单两文件的改动。
 > - **如实登记**：未跑「PG 可连 + 迁移完成 → `/readyz` 200 → healthy」的正向腿（需要一次性 PG 实例；`/readyz` 200 分支已有 `internal/httpapi/g1_test.go` 覆盖），也未在本机验证 K8s 探针配置（本仓无 K8s 清单）。core 统一 `docker-compose.yml` 的 strategy healthcheck 同步不在本单（跨仓指针）。
+
+<a id="STRAT-WRITE-AUTH-ROLLOUT"></a>
+### STRAT-WRITE-AUTH-ROLLOUT · 5 条公开写端点收紧为 service token（跨仓两步走）[P1] ✅（2026-11-12）
+
+- **① 目标**：把策略资产的 5 条写端点（create / source / build / validate / deprecate）从「公开、靠端口隔离」收紧为与本仓 `promote` / `/internal/*` 同一套 `role=service` 鉴权闸；跨仓两步走，中间不设断链窗口。
+- **② 上下文（2026-11-12 裁决 A + 全仓实测测绘）**：
+  - 收紧前本仓：`internal/httpapi/policy.go` 只挂 3 条；`internal/httpapi/api.go:112-133` 的 10 条公开端点里 **5 读 + 5 写**（写侧：`POST /api/strategies`、`PUT .../source`、`POST .../build`、`POST .../validate`、`POST .../deprecate`）。闸门语义：无 authorizer 时受保护路由一律 503 `auth_unavailable`（`internal/httpapi/auth.go:87-92`），不存在「没配 secret 就放行」。
+  - 唯一生产调用方：agent `pkg/ai/client/strategy_asset_client.go`——`Register → createDefinition`、`putSource`、`submitBuild`，运行期服务间调用；`call()` 原先**只设 `Content-Type`，零 `Authorization`**，`StrategyAssetConfig` 无 token 字段。装配：`config/ai-service.yaml` 默认 `http://127.0.0.1:8090`，agent 自证 `deploy/compose.yaml` 注入 `STRATEGY_ASSET_URL`；统一栈 `tellurion/docker-compose.yml` 的 ai-service **连 `STRATEGY_ASSET_URL` 都没注入**，strategy 段也无 `JWT_SECRET`——两段都无 token。
+  - 零生产调用方：`validate` 仅 core opt-in 用例 `cmd/analysis/wiring/strategy_asset_live_test.go`；`deprecate` 仅本仓 `internal/httpapi/api_test.go`。UI 不直连 8090（`web/src/api/strategy.ts` 走 core 的 `VITE_API_BASE`），无前端改造。
+- **③ 要求**：
+  1. **agent 侧（跨仓，先在 agent 仓执行）**：`StrategyAssetConfig` 增 token 字段；`call()` 在有 token 时发 `Authorization: Bearer <token>`；`STRATEGY_ASSET_TOKEN` 进 `config/ai-service.yaml` 与 agent 自证 `deploy/compose.yaml`；补客户端测试（有/无 token 两条）。
+  2. **统一栈（core 仓）**：`docker-compose.yml` 的 **ai-service 段**补 `STRATEGY_ASSET_URL` + `STRATEGY_ASSET_TOKEN`，**strategy 段**补 `JWT_SECRET`（与 token 同源）——两段必须同批注入，不能只改一侧。
+  3. **本仓（第二步）**：把 5 条写端点并入 `servedPolicy`，角色 `service`；不改 handler、不新增角色、不改路径。
+  4. **发布顺序硬约束**：**agent 具备带 token 能力并发布在前，strategy 收紧在后**；中间不设断链窗口。
+  5. **本地直跑口径**：复用 kit `DecideStartup` 的回环 / `AUTH_INSECURE_EXPOSURE=loopback-published` 豁免——但它**只免除启动拒绝**，不会让受保护路由放行。收紧后本地起服务必须先 `go run tools/issue_service_token.go`（core 仓）签发 token，并注入 `JWT_SECRET` + `STRATEGY_ASSET_TOKEN`。**禁止**新增「没配 secret 就放行写端点」的后门。
+- **④ 约束与非目标**：5 条读端点保持公开不动；不改端点路径 / 请求体 / 响应体；不新增角色；不把 `validate` / `deprecate` 拆出来单独先收紧（5 条同批）；不做 per-endpoint RBAC。
+- **⑤ 验收（四种判据 + 破坏验证）**：
+  - **无 token** → 有 `JWT_SECRET` 时 401 `unauthenticated`；无 authorizer 时 503 `auth_unavailable`；**不得 2xx**。
+  - **错 token**（坏签名 / refresh token / `role=user`）→ 401；角色不符 → 403。
+  - **对 token**（`role=service`）→ create / source / build / validate / deprecate 各一条真调用成功。
+  - **破坏验证**：把 5 条从 `servedPolicy` 删除（回到公开）⇒「无 token 不得 2xx」判据必须变红；逐字节还原后复绿。
+  - 另需：读端点仍公开（用例钉住）；`go build ./... && go vet ./... && go test ./... -count=1` 全绿；agent 侧客户端测试与 `docker compose config` 通过。
+- **⑥ 边界**：本仓 `internal/httpapi/{policy.go,api.go,g1_test.go,api_test.go,report_test.go}` 与 docs；agent 仓 `pkg/ai/client/strategy_asset_client*.go` + `cmd/ai/{lifecycle.go,asset_registrar.go}` + `config/ai-service.yaml` + `deploy/compose.yaml`；core 仓 `docker-compose.yml` 两段与 `tools/issue_service_token.go`（**本轮未改**，见下方待办单）。
+- **owner**：待定（跨仓：strategy + agent + core）
+
+> **施工记录（2026-11-12）**：
+> - **执行顺序（硬约束，已遵守）**：第一步只动 agent 仓，落地「带 token 能力」并提交推送（`tellurion-agent@a59631e`，`origin/main` 已含）；确认远端可见后才回本仓做第二步。中间没有出现「agent 不带 token 而服务端已要求」的断链窗口。
+> - **agent 侧半（`tellurion-agent@a59631e`）**：`StrategyAssetConfig.Token`；`call()` 有 token 时发 `Authorization: Bearer <token>`、token 首尾空白 TrimSpace；**空 token 不发头、不拒调用**（零 token 时行为与改动前逐字节一致——第 1 步只让能力就位，避免打断仍在公开期的链路；工单 ③.1 原措辞「无 token 即 fail-closed」属于收紧完成后的目标姿态，已由用户在排期中明确改为本步不 fail-closed）；`STRATEGY_ASSET_TOKEN` 显式 `BindEnv` 进 `config/ai-service.yaml`（值恒为空串）与 `deploy/compose.yaml` 透传；装配期缺 token 打 warn 并记 `token_configured=false`。测试：`TestStrategyAssetClient_SendsServiceTokenOnEveryCall`（wasm 五步含轮询 GET 全带 Bearer）、`TestStrategyAssetClient_EmptyTokenSendsNoAuthorizationHeader`。破坏验证：把发头分支置 `false` ⇒ 前者红，逐字节还原后 SHA256 一致、复绿。
+> - **本仓半（第二步）**：`servedPolicy` 从 3 条扩到 8 条（新增 5 条资产写，全 `Roles: ["service"]`，`policy.go:20-29`）；`api.go` 的 5 条写从 `openRoute` 改 `requireAuth`（`api.go:117-125`）；读端点与 handler/路径/请求体一律未动。
+> - **测试**：`TestServedPolicyIsServiceOnly` 断言 8 条、全 `service`；`TestProtectedRoutesRejectMissingToken` / `TestProtectedRoutesRejectNonServiceRole` 覆盖 8 条；`TestWriteRoutesRejectBadToken`（坏 token → 401）；`TestWriteRoutesAcceptServiceToken`（create → source → build → validate → promote → deprecate 真成功）；`TestReadRoutesRemainPublic` 钉住 5 条读端点仍公开（401/403 即红）；原 `TestOpenRoutesRemainUngated` 里「写端点公开」的断言按新姿态改写，未删任何读面断言。
+> - **四判据实测**：无 token → 401 `unauthenticated`（无 authorizer 时 503 `auth_unavailable`，见 `auth.go:87-92`）；坏 token → 401；`role=service` → 5 条各自 2xx；角色不符 → 403。
+> - **破坏验证（真做真还原）**：临时把 `servedPolicy` 删回 3 条、`api.go` 的 5 条改回 `openRoute`，`go test ./internal/httpapi` ⇒ `TestProtectedRoutesRejectMissingToken` 与 `TestWriteRoutesRejectBadToken` 红（实测 `status = 400/404, want 401`，请求真的落到 handler）；从备份逐字节还原后两文件 SHA256 与破坏前一致，全包复绿。
+> - **验收（真实输出）**：`gofmt -l internal/httpapi` 无输出；`go build ./...` / `go vet ./...` 退出码 0；`go test ./... -count=1` 全绿。
+> - **未做（按用户边界，已立待办）**：统一栈 `tellurion/docker-compose.yml` 的两段注入本轮未动（该文件后面有 core compose 批次要改参数，同时改会撞车），见本文件新立的 `STRAT-COMPOSE-AUTH-INJECT`。
+> - **本地直跑口径**：已写进 `docs/runbook.md` §1.2——core 仓 `tools/issue_service_token.go` 签发（secret 只走 env）、`JWT_SECRET` + `STRATEGY_ASSET_TOKEN` 注入、agent 从 env 读同一个值；回环豁免只免启动拒绝，不放行受保护路由。
+
 

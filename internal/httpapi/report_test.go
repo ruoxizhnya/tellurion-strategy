@@ -57,8 +57,8 @@ func queuedJob(t *testing.T, srv *httptest.Server, id, version, toolchain string
 func TestAPI_InternalReportBuildJob_SucceedsWithArtifact(t *testing.T) {
 	wasm := wasmWithImports("env.get_bar", "env.emit_target2")
 	srv, _ := newServer(t, &dispatchCompiler{id: "tinygo-test"})
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 
 	jobID := queuedJob(t, srv, id, version, "tinygo-test")
 	resp := call(t, srv, http.MethodGet, "/api/strategies/"+id+"/builds/"+jobID, nil, nil)
@@ -119,8 +119,8 @@ func TestAPI_InternalReportBuildJob_SucceedsWithArtifact(t *testing.T) {
 // 验收：queued 直达 failed，带 error_code；缺省归 compile_failed。
 func TestAPI_InternalReportBuildJob_FailedWithErrorCode(t *testing.T) {
 	srv, _ := newServer(t, &dispatchCompiler{id: "tinygo-test"})
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 	path := "/internal/strategies/" + id + "/builds/"
 
 	jobID := queuedJob(t, srv, id, version, "tinygo-test")
@@ -151,8 +151,8 @@ func TestAPI_InternalReportBuildJob_FailedWithErrorCode(t *testing.T) {
 // 验收：跨策略与不存在的 job 一律 404 job_not_found（不跨策略枚举）。
 func TestAPI_InternalReportBuildJob_NotFound(t *testing.T) {
 	srv, _ := newServer(t, &dispatchCompiler{id: "tinygo-test"})
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 	jobID := queuedJob(t, srv, id, version, "tinygo-test")
 
 	wantErrorCode(t, call(t, srv, http.MethodPost,
@@ -166,8 +166,8 @@ func TestAPI_InternalReportBuildJob_NotFound(t *testing.T) {
 // 验收：非法状态 / 非法转移 / succeeded 缺 artifact / 坏 hash 的错误码。
 func TestAPI_InternalReportBuildJob_RejectsInvalidTransitions(t *testing.T) {
 	srv, _ := newServer(t, &dispatchCompiler{id: "tinygo-test"})
-	id := createWasm(t, srv, "on_bar/2", "market")
-	version := putSource(t, srv, id, "package strategy")
+	id := createWasm(t, srv, nil, "on_bar/2", "market")
+	version := putSource(t, srv, nil, id, "package strategy")
 	prefix := "/internal/strategies/" + id + "/builds/"
 
 	jobID := queuedJob(t, srv, id, version, "tinygo-test")

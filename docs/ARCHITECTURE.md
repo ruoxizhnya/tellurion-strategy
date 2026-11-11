@@ -52,9 +52,9 @@ internal/
                      / cache.go（L1 内存 LRU + L2 磁盘内容寻址 + latest TTL）
                      / builtin.go（14 个内置策略的 carrier=builtin 同步登记）
                      / elf.go（carrier=so 的导出符号表校验：entry 必须是已定义 GLOBAL/WEAK 符号）
-  httpapi/           传输层：标准库 http.ServeMux，13 个业务端点（10 条公开不挂闸 = 5 读 + 5 写，写侧已裁决收紧
-                     + `/promote` + 2 条 `/internal/*`）
-                     + 2 个公开探针（/healthz /readyz）；policy.go 只给 /promote 与两条 /internal/* 挂
+  httpapi/           传输层：标准库 http.ServeMux，13 个业务端点（5 条公开读 + 8 条受保护写：
+                     5 条资产写 create / source / build / validate / deprecate + `/promote` + 2 条 `/internal/*`）
+                     + 2 个公开探针（/healthz /readyz）；policy.go 的 servedPolicy 给全部 8 条写端点挂
                      kit service-token 闸；auth.go 鉴权先于限流；limit.go 按身份令牌桶
   compile/           Compile 门：Toolchain 执行器（-target=wasm-unknown、tinygo 强制 -no-debug、env 白名单、
                      toolchains.lock 二进制 sha256、超时、日志截断）
@@ -130,4 +130,4 @@ tellurion-strategy  ──(HTTP 读)──►  core 引擎
 |---|---|---|
 | 腿 1 | DSL 资产化（零工具链）：`carrier=dsl` + `version_hash` + `strategy_ref` | ✅ `version_hash` / `strategy_ref` 解析已落地（2026-10-23） |
 | 腿 2 | WASM：工具链 + PoC → go/no-go | ✅ 编译执行器 + 真 TinyGo 0.34.0 镜像已接、产物可复现（QT-41b）；跨进程装配与状态回写已收口（QT-41c） |
-| X2 | 本仓完整落地（写 7 + 读 2 端点） | ✅ 13 个业务端点（10 条公开不挂闸 = 5 读 + 5 写，写侧已裁决收紧 + `/promote` + 2 条 `/internal/*`）+ 2 探针已实装；PG / 迁移 / 缓存 / 内置登记 / 跨进程编译闭环已落。`storage=url`、`carrier=external` hash 语义为**非目标**（2026-11-12 复核） |
+| X2 | 本仓完整落地（写 7 + 读 2 端点） | ✅ 13 个业务端点（5 条公开读 + 8 条受保护写：5 条资产写 + `/promote` + 2 条 `/internal/*`）+ 2 探针已实装；写侧 service token 闸已收紧（2026-11-12）；PG / 迁移 / 缓存 / 内置登记 / 跨进程编译闭环已落。`storage=url`、`carrier=external` hash 语义为**非目标**（2026-11-12 复核） |

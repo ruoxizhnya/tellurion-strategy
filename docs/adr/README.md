@@ -24,4 +24,4 @@
 | [0002](0002-artifact-主键与生效字节的裁决.md) | artifact 主键与生效字节的裁决（偏差 #1：7 列 + 主键） | 已裁决（2026-10-23） |
 | [0003](0003-存储缓存作业与产物可复现性.md) | 存储/缓存/作业落地与产物可复现性（PG、两级缓存、job 落库、so 符号、TinyGo -no-debug） | 已裁决（2026-10-24） |
 | [0004](0004-core消费边界与promote归属.md) | core 消费边界与 promote 归属（内置本地 registry / 非空 ref resolve / promote 直连 / ⑫ 按部署入口） | 已裁决（2026-11-10） |
-| [0005](0005-鉴权姿态与端口隔离边界.md) | 鉴权姿态与端口隔离边界（10 条公开 = 5 读 + 5 写；5 条写已裁决收紧为 service-token 闸 / `DecideStartup` 启动闸 / `X-Actor`） | 已裁决（2026-11-12 补记；同日裁决 A 收紧写侧） |
+| [0005](0005-鉴权姿态与端口隔离边界.md) | 鉴权姿态与端口隔离边界（5 条公开读 = versions/promotions/builds/resolve/artifact；8 条写 = 5 资产写 + promote + 2 内部面，只认 service-token；`DecideStartup` 启动闸 / `X-Actor`） | 已裁决（2026-11-12 补记；同日裁决 A 收紧写侧并落地） |

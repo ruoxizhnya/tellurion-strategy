@@ -6,7 +6,7 @@
 // 实现按能力拆在子包，不要堆到这里：
 //
 //	internal/asset         领域核心（模型 / VersionHash / Verify / Store / DDL / Service）
-//	internal/httpapi       传输层（13 个业务端点：10 条公开不挂闸 = 5 读 + 5 写，写侧已裁决收紧 + /promote + 2 条 /internal/*；另有 2 条探针）
+//	internal/httpapi       传输层（13 个业务端点：5 条公开读 + 8 条受保护写——5 条资产写 + /promote + 2 条 /internal/*；另有 2 条探针）
 //	internal/compile       Compile 门（toolchain 执行器）
 //	internal/compilerjob   编译作业管线（队列 / 限并发 / 重试 → artifact_hash → 内部端点登记）
 //	cmd/assetservice       资产服务进程入口

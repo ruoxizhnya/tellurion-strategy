@@ -1,15 +1,16 @@
 ---
 status: active
 last-verified: 2026-11-12
-verified-by: 2026-11-12 鉴权口径订正——13 业务端点 = 10 公开（5 读 + 5 写：create / source / build / validate / deprecate）+ `/promote` + 2 `/internal/*`，另 2 探针；按裁决 A 标注「5 条公开写端点已裁决收紧、代码未动」（ADR-0005 + `STRAT-WRITE-AUTH-ROLLOUT`）。此前文档对齐审计——端点数校准、kit pin 记 `v0.2.0`、contracts pin 升 `v0.9.0`、promote 调用方按 ADR-0004 改为 agent/操作者直连
+verified-by: 2026-11-12 写侧收紧落地——13 业务端点 = 5 条公开读 + 8 条受保护写（5 资产写：create / source / build / validate / deprecate + `/promote` + 2 `/internal/*`），另 2 探针；跨仓两步走已按序完成（agent 带 token 能力先发布 `tellurion-agent@a59631e`，本仓随后并入 `servedPolicy`；ADR-0005 + `STRAT-WRITE-AUTH-ROLLOUT`）。此前文档对齐审计——端点数校准、kit pin 记 `v0.2.0`、contracts pin 升 `v0.9.0`、promote 调用方按 ADR-0004 改为 agent/操作者直连
 ---
 
 # API Schema — tellurion-strategy
 
-> **实现状态（2026-11-12 复核）**：13 个业务端点——10 条公开不挂鉴权（**5 读 + 5 写**：create / source / build / validate / deprecate）
-> + 3 条受保护（`/promote` + 2 条 `/internal/*`）——由 `internal/httpapi` 落地，另有 2 条公开探针；语义在 `internal/asset.Service`
-> （均是标准库 `net/http`，不是 gin）。**5 条公开写端点已裁决收紧为 service 闸**（2026-11-12 裁决 A，跨仓两步走，
-> 代码未动，见 ADR-0005 与 `docs/TASKS.md` 的 `STRAT-WRITE-AUTH-ROLLOUT`）。
+> **实现状态（2026-11-12 复核）**：13 个业务端点——**5 条公开读**（`versions` / `promotions` / `builds/{job_id}` / `resolve` / `artifact`）
+> + **8 条受保护写**（5 条资产写 create / source / build / validate / deprecate，`/promote`，2 条 `/internal/*`）——由 `internal/httpapi` 落地，
+> 另有 2 条公开探针；语义在 `internal/asset.Service`（均是标准库 `net/http`，不是 gin）。写侧收紧按 2026-11-12 裁决 A 的**跨仓两步走**完成：
+> agent 侧带 token 能力先发布（`tellurion-agent@a59631e`），本仓随后把 5 条写端点并入 `servedPolicy`（`internal/httpapi/policy.go:20-29`），
+> 中间不留断链窗口；见 ADR-0005 与 `docs/TASKS.md` 的 `STRAT-WRITE-AUTH-ROLLOUT`。
 > 存储有 `Memory`（测试）与 PG（生产，启动执行迁移）；两级缓存、latest TTL、build job 持久化、
 > 14 个内置策略登记均已落地。
 > **QT-41c（2026-10-25）**：`cmd/assetservice` 用 `-compiler-bin` 装配外部编译进程——build 端点落 queued 行后
@@ -32,6 +33,9 @@ verified-by: 2026-11-12 鉴权口径订正——13 业务端点 = 10 公开（5 
 ## 1. 接口面
 
 ### 写侧（作者 / AI / 编译服务）
+
+> 写侧**全部**要求 `Authorization: Bearer <service token>`（`role=service`，2026-11-12 起；`GET` 列表/查询类仍公开）。
+> 逐端点失败语义见「鉴权与限流」节：无 token / 坏 token → 401，角色不符 → 403。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
@@ -75,22 +79,27 @@ verified-by: 2026-11-12 鉴权口径订正——13 业务端点 = 10 公开（5 
 
 ### 鉴权与限流（G1）
 
-> **决策来源**：本节的姿态（10 条公开 = 5 读 + 5 写 / 3 条 `service` 闸 / `DecideStartup` 启动闸 / promote 的 `X-Actor`；5 条写端点已裁决收紧）已固化为
+> **决策来源**：本节的姿态（5 条公开读 / 8 条 `service` 闸 / `DecideStartup` 启动闸 / promote 的 `X-Actor`）已固化为
 > [ADR-0005 · 鉴权姿态与端口隔离边界](adr/0005-鉴权姿态与端口隔离边界.md)；本节只留可执行的行为表，取舍理由见 ADR。
 
-**只有三条端点挂鉴权闸**（`internal/httpapi/policy.go`，裁决 ⑫）：
+**八条写端点挂鉴权闸**（`internal/httpapi/policy.go:20-29`，裁决 ⑫ + 写侧收紧）：
 
 | 方法 | 路径 | 允许角色 |
 |---|---|---|
+| POST | `/api/strategies` | `service` |
+| PUT | `/api/strategies/{id}/source` | `service` |
+| POST | `/api/strategies/{id}/build` | `service` |
+| POST | `/api/strategies/{id}/versions/{hash}/validate` | `service` |
+| POST | `/api/strategies/{id}/versions/{hash}/deprecate` | `service` |
 | POST | `/api/strategies/{id}/versions/{hash}/promote` | `service` |
 | POST | `/internal/strategies/{id}/artifacts` | `service` |
 | POST | `/internal/strategies/{id}/builds/{job_id}` | `service` |
 
 - 凭证：`Authorization: Bearer <access token>`（service token = kit `IssueServiceToken`，`role=service`）。
   无 token / 坏 token / 用 refresh token → 401 `unauthenticated`；角色不对 → 403 `forbidden`。
-- 其余 10 条公开端点（**5 读 + 5 写**：create / source / build / validate / deprecate）**不挂鉴权**，靠端口隔离
-  （默认 `127.0.0.1:8090`，只在集群内/回环）。**5 条写端点是已裁决待收紧的缺口，不是终态**：收紧后并入上表、只认 `service`，
-  见 ADR-0005「代价 / 后果」与 `docs/TASKS.md` 的 `STRAT-WRITE-AUTH-ROLLOUT`。
+- 其余 5 条**读端点**（`versions` / `promotions` / `builds/{job_id}` / `resolve` / `artifact`）保持公开，靠端口隔离
+  （默认 `127.0.0.1:8090`，只在集群内/回环）。读面不带写入能力，加闸只会让 core / UI 的读链路无故要 token；
+  这条豁免**不覆盖写**——5 条写端点已于 2026-11-12 并入上表（`TestReadRoutesRemainPublic` 钉住读侧仍公开）。
   启动闸（kit `DecideStartup`）：无 `JWT_SECRET` 且绑定非回环、又未声明 `AUTH_INSECURE_EXPOSURE=loopback-published`
   ⇒ **拒绝启动**，不会出现「漏配 secret 就全开」的进程。
 - 限流：进程内按身份分桶（令牌桶 50 rps / 突发 200；未鉴权端点共用一个 `open-access` 桶）。

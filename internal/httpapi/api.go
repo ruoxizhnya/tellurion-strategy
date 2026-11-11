@@ -53,7 +53,7 @@ var (
 	errAuditUnavailable = errors.New("promotion audit is not configured")
 )
 
-// API 是 13 个业务端点（10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`）+ 2 个探针的路由器。
+// API 是 13 个业务端点（5 条公开读 + 8 条受保护写）+ 2 个探针的路由器。
 type API struct {
 	svc          *asset.Service
 	mux          *http.ServeMux
@@ -107,24 +107,24 @@ func New(svc *asset.Service, opts ...Option) (*API, error) {
 	return a, nil
 }
 
-// register 挂路由。探针公开且不限流；`policy.go` 的三条走 requireAuth
-// （鉴权先于限流）；其余公开端点只限流（端口隔离是它们的边界，见 policy.go）。
+// register 挂路由。探针公开且不限流；`policy.go` 的八条走 requireAuth
+// （鉴权先于限流）；其余 5 条读端点只限流（端口隔离是它们的边界，见 policy.go）。
 func (a *API) register() {
 	// 公开探针（G1 ③）：探针不鉴权、不限流——被限流会被调用方读成未登录。
 	a.mux.HandleFunc("GET /healthz", a.healthz)
 	a.mux.HandleFunc("GET /readyz", a.readyz)
 
-	// 受保护的三条（裁决 ⑫）。
+	// 受保护的八条（裁决 ⑫ + STRAT-WRITE-AUTH-ROLLOUT 写侧收紧）。
+	a.mux.HandleFunc("POST /api/strategies", a.requireAuth(a.createDefinition))
+	a.mux.HandleFunc("PUT /api/strategies/{id}/source", a.requireAuth(a.putSource))
+	a.mux.HandleFunc("POST /api/strategies/{id}/build", a.requireAuth(a.submitBuild))
+	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/validate", a.requireAuth(a.validateVersion))
+	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/deprecate", a.requireAuth(a.deprecate))
 	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/promote", a.requireAuth(a.promote))
 	a.mux.HandleFunc("POST /internal/strategies/{id}/artifacts", a.requireAuth(a.registerArtifact))
 	a.mux.HandleFunc("POST /internal/strategies/{id}/builds/{job_id}", a.requireAuth(a.reportBuildJob))
 
-	// 其余公开端点：靠端口隔离，不在策略表里。
-	a.mux.HandleFunc("POST /api/strategies", a.openRoute(a.createDefinition))
-	a.mux.HandleFunc("PUT /api/strategies/{id}/source", a.openRoute(a.putSource))
-	a.mux.HandleFunc("POST /api/strategies/{id}/build", a.openRoute(a.submitBuild))
-	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/validate", a.openRoute(a.validateVersion))
-	a.mux.HandleFunc("POST /api/strategies/{id}/versions/{hash}/deprecate", a.openRoute(a.deprecate))
+	// 其余 5 条读端点保持公开：靠端口隔离，不在策略表里。
 	a.mux.HandleFunc("GET /api/strategies/{id}/versions", a.openRoute(a.listVersions))
 	a.mux.HandleFunc("GET /api/strategies/{id}/promotions", a.openRoute(a.listPromotions))
 	a.mux.HandleFunc("GET /api/strategies/{id}/builds/{job_id}", a.openRoute(a.getBuildJob))
