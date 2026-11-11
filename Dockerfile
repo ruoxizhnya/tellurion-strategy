@@ -21,7 +21,7 @@ RUN go build -trimpath \
 FROM alpine:3.19
 
 WORKDIR /app
-RUN apk add --no-cache ca-certificates netcat-openbsd tzdata && \
+RUN apk add --no-cache ca-certificates curl tzdata && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     rm -rf /var/cache/apk/*
@@ -36,9 +36,12 @@ RUN mkdir -p /data/artifacts && chown 65534:65534 /data/artifacts
 ENV XDG_CACHE_HOME=/tmp/.cache
 
 EXPOSE 8090
-# 本仓今天没有公开 /healthz；G0 用 TCP 探针，公开健康端点归 G1。
+# 就绪探针（STRAT-READYZ-PROBE）：走 HTTP `/readyz`，真应答才算健康——端口开着
+# 不算。`/readyz` 同时校验 PG 池可连与本仓迁移已执行；PG 挂掉时容器 unhealthy
+# （compose 的 restart 策略不会因 unhealthy 重启，故不会震；K8s 的 liveness 不得
+# 复用本探针，否则库抖动会杀光实例）。镜像内需自带 curl（上面 apk 已装）。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD nc -z 127.0.0.1 8090 || exit 1
+    CMD curl -fsS http://127.0.0.1:8090/readyz || exit 1
 
 USER nobody
 ENTRYPOINT ["/app/strategy-service"]

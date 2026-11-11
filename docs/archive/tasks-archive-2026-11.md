@@ -19,6 +19,7 @@
 | SVC-STRAT-G4 | 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036） | 2026-11-10 | —（原文未记） | [原文](#SVC-STRAT-G4) |
 | STRAT-GRACEFUL-SHUTDOWN | 资产服务无优雅停机，SIGTERM 直接掐断在途请求 | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-GRACEFUL-SHUTDOWN`） | [原文](#STRAT-GRACEFUL-SHUTDOWN) |
 | STRAT-AUTH-ADR | 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-AUTH-ADR`） | [原文](#STRAT-AUTH-ADR)；[ADR-0005](adr/0005-鉴权姿态与端口隔离边界.md) |
+| STRAT-READYZ-PROBE | 健康探针是 TCP `nc -z`，端口开着就算健康（活≠就绪） | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-READYZ-PROBE`） | [原文](#STRAT-READYZ-PROBE) |
 
 ---
 
@@ -580,4 +581,23 @@
 > - **与既有 ADR 的关系**：cross-ref ADR-0004（promote 归属 / 部署入口解释）与 kit `auth/httpadapter`（`DecideStartup` / `ServiceRole`）；按派单要求**不声称跨仓统一**——broker 的写侧静态 token / 读侧开放是它自己 ADR 的分叉例外，本 ADR 只写本仓姿态。
 > - **验收（真实输出）**：`python ../tellurion-docs/tools/check_doc_links.py` → `活跃层：247 条链接，0 条断`（历史层 758 条 / 174 断，只统计不判红）；ADR-0005 状态行含 `已裁决 / Accepted`；api-schema 与 README 索引均有指回/登记。
 > - **破坏验证（链接层，真实执行）**：`check_doc_links.py` 把**指向** `docs/adr` 的链接归入"历史层、不判红"（实测把 api-schema 里的目标改成 `0005-not-exist.md` 后活跃层仍是 `0 断`），所以另用存在性扫描（`docs/*.md` + `docs/adr/README.md` 中所有 `](adr/...)` 目标逐个 `Test-Path`）：正常态 `broken count: 0`；把 ADR 文件临时重命名为 `0005-tmp-break.md` ⇒ `BROKEN api-schema.md -> adr/0005-鉴权姿态与端口隔离边界.md`、`broken count: 1`；改回原名后复绿 `0`。
+
+<a id="STRAT-READYZ-PROBE"></a>
+### STRAT-READYZ-PROBE · 健康探针是 TCP `nc -z`，端口开着就算健康（活≠就绪）[P3] ✅（2026-11-12）
+
+- **① 目标**：把本仓的健康探针从「TCP 端口可连」升级为「HTTP 端点真应答」，让容器在 HTTP 服务未起 / 迁移未完成时不被误判为健康。
+- **② 上下文（2026-11-11 全面审查 W5-F6，证据 ODR-072 `tellurion-docs:docs/archive/odr/odr-072-audit-wave5-security-reliability-deps.md`；**归属订正**：ODR-072 W5-F6 原把此探针误记为 analytics，实测 `nc -z 8090` 属本仓 strategy，analytics compose 已是 HTTP `/healthz`，详见该 ODR 末尾订正注记）**：本仓 `Dockerfile:40-41` `HEALTHCHECK ... CMD nc -z 127.0.0.1 8090 || exit 1`、`deploy/compose.yaml:28-29` `test: ["CMD","nc","-z","127.0.0.1","8090"]` 都是**纯 TCP 探测**——端口一开就 healthy，即使 HTTP 路由未注册或 PG/迁移未就绪。本仓已有 `GET /healthz`（进程存活）与 `GET /readyz`（PG + 迁移，SVC-STRAT-G1）两条 HTTP 探针可用。core 统一 `docker-compose.yml:480-481` 镜像了同一 `nc -z` 定义（跨仓指针见下）。
+- **③ 要求**：① `Dockerfile` 与 `deploy/compose.yaml` 的 healthcheck 改为 HTTP 探测（基线 `curl -fsS http://127.0.0.1:8090/healthz`，与 risk/analytics/orchestration/broker 同口径；若镜像无 curl 用 wget 等价）；② 是否进一步用 `/readyz`（含 PG/迁移）由施工者按「PG  down 时是否希望容器被重启」权衡并在单内记录决定；③ 确认运行镜像含探测所需二进制（curl/wget），缺则在 Dockerfile 补。
+- **④ 约束与非目标**：不改 `/healthz` `/readyz` 端点本身的语义；不改端口；不引入新依赖库；core 统一 compose 的同步行归 core（跨仓指针），本单只改本仓两份自证资产。
+- **⑤ 验收**：`docker build` 后起容器，HTTP 服务未就绪时 healthcheck 不报 healthy（破坏验证 = 把探针改回 `nc -z` ⇒ 端口开即 healthy 的假绿复现，还原复绿）；`grep -n "nc -z" Dockerfile deploy/compose.yaml` 归零。
+- **⑥ 边界**：本仓 `Dockerfile` + `deploy/compose.yaml`；core 统一 `docker-compose.yml:480-481` 的 strategy healthcheck 同步归 `tellurion:docs/TASKS.md`（另立或并入 compose 巡检单）。
+- **owner**：待定
+
+> **施工记录（2026-11-12）**：
+> - **决定：用 `/readyz` 而不是 `/healthz`**。理由：本单目标是「活≠就绪」，`/readyz` 才同时覆盖「PG 池可连 + 本仓迁移已执行」；`/healthz` 在 PG 挂掉时仍 200，等于把「进程活着」当「服务可用」。PG down 时容器转 unhealthy 的副作用已评估：`deploy/compose.yaml` 是 `restart: unless-stopped`，**Docker 不会因 unhealthy 重启容器**，不会震；K8s 忽略镜像 `HEALTHCHECK`，其 liveness 不得复用 `/readyz`（库抖动会杀光实例），已在 Dockerfile 注释写明。**内存模式（无 `STRATEGY_DATABASE_URL`）的容器会一直 unhealthy**——这是刻意的：`/readyz` 对 `unwired` 返回 503，该模式只用于本地演示，compose 默认走 PG。
+> - **落点**：`Dockerfile`——`apk add ... curl` 替换 `netcat-openbsd`（镜像自带探测二进制），`HEALTHCHECK CMD curl -fsS http://127.0.0.1:8090/readyz || exit 1`；`deploy/compose.yaml`——`test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/readyz"]`。未改 `/healthz` `/readyz` 语义、端口与依赖库。
+> - **验收（真实输出，Docker 引擎 29.9.3）**：`docker build -q -t tellurion-strategy:probe-check .` → 成功；`docker compose -f deploy/compose.yaml config -q` → exit 0；`Select-String -Path Dockerfile,deploy\compose.yaml -Pattern "nc -z"` → **0 命中**（归零）；内存模式起容器（加速探针 `--health-interval=2s --health-retries=2 --health-start-period=1s`）后 `docker inspect .State.Health` → `"Status":"unhealthy","FailingStreak":5`，日志四次 `curl: (22) The requested URL returned error: 503`；同容器 `curl /healthz` → `{"status":"ok"}`（200）、`curl /readyz` → 503 ⇒ 「进程活着但未就绪」被区分出来。
+> - **破坏验证（真实执行，未改镜像）**：同一个镜像、同一个内存模式容器，用 `docker run --health-cmd "nc -z 127.0.0.1 8090 || exit 1"` 复现旧探针 ⇒ `"Status":"healthy","FailingStreak":0`（四段命中 `ExitCode:0`）——**端口开即 healthy 的假绿当场复现**；由于新探针本就写在镜像/ compose 里，移除 break 容器即还原（重建默认探针容器后仍 unhealthy，见上一条）。
+> - **清场**：两个容器 `docker rm -f`、临时镜像 `docker rmi` 均成功；`git status` 仅剩本单两文件的改动。
+> - **如实登记**：未跑「PG 可连 + 迁移完成 → `/readyz` 200 → healthy」的正向腿（需要一次性 PG 实例；`/readyz` 200 分支已有 `internal/httpapi/g1_test.go` 覆盖），也未在本机验证 K8s 探针配置（本仓无 K8s 清单）。core 统一 `docker-compose.yml` 的 strategy healthcheck 同步不在本单（跨仓指针）。
 
