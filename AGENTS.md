@@ -6,8 +6,8 @@
 
 策略**资产**服务：策略定义 / 版本 / artifact / resolve（编译与执行三分里的"资产"这一分）。**策略运行时不做成服务**——逐 bar 执行留在 core 进程内。
 
-**状态**：✅ 资产服务落地（2026-11-11 复核）——`internal/asset`（Memory + PG Store、启动迁移、两级缓存、latest TTL、job 持久化、
-14 个内置策略登记、so 符号校验）+ `internal/httpapi`（13 个业务端点：10 条公开不挂闸 + `/promote` + 2 条 `/internal/*`；另有 2 条探针）
+**状态**：✅ 资产服务落地（2026-11-12 复核）——`internal/asset`（Memory + PG Store、启动迁移、两级缓存、latest TTL、job 持久化、
+14 个内置策略登记、so 符号校验）+ `internal/httpapi`（13 个业务端点：10 条公开不挂闸 = **5 读 + 5 写**，写侧已裁决收紧 + `/promote` + 2 条 `/internal/*`；另有 2 条探针）
 + `internal/compile`（真 TinyGo 0.34.0 锁与 `-no-debug`）
 + `internal/compilerjob` + `cmd/*` 已落地。G5（2026-10-24）补了编译 job 的**队列 / 重试 / 限并发**（`compilerjob.Queue`，
 状态词表与 `strategy_build_jobs` 同一套）。QT-41c（2026-10-25）收口了编译链路跨进程闭环：
