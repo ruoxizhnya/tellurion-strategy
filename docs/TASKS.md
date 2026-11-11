@@ -12,16 +12,6 @@ verified-by: 2026-11-11 全面审查 W7 台账立单（A5 授权）——新立 
 
 ## 一、未做 / 挂起 / 外部依赖
 
-### STRAT-GRACEFUL-SHUTDOWN · 资产服务无优雅停机，SIGTERM 直接掐断在途请求 [P1] ⬜
-
-- **① 目标**：`cmd/assetservice` 收到 SIGTERM/SIGINT 时先停止接受新连接、给在途请求一个有界 drain 窗口再退出，而不是被信号直接杀死。
-- **② 上下文（2026-11-11 全面审查 W5-F2，证据 ODR-072 `tellurion-docs:docs/archive/odr/odr-072-audit-wave5-security-reliability-deps.md`）**：`cmd/assetservice/main.go:175-189` 已建 `http.Server`（带 `ReadHeaderTimeout: 5s`）并在 `:186` 用 `errors.Is(err, http.ErrServerClosed)` 兜底，但**全文件无 `signal.Notify` / `srv.Shutdown` / `NotifyContext`**（grep 零命中）⇒ `ErrServerClosed` 分支是死代码，没有任何东西触发 `Shutdown`，SIGTERM 走默认处置直接终止进程。同批四仓（data/risk/analytics/strategy）同形缺陷，见各仓 `*-GRACEFUL-SHUTDOWN` 单。
-- **③ 要求**：① 用 `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` 或等价机制捕获终止信号；② 信号到达后调 `srv.Shutdown(drainCtx)`，drain 窗口有界（建议 ≤10s，与既有超时口径一致）；③ drain 超时则 `srv.Close()` 兜底并非零退出；④ 正常 `ListenAndServe` 返回 `ErrServerClosed` 时退出码 0（现有兜底保留）；⑤ 启动日志点名 drain 窗口时长。
-- **④ 约束与非目标**：不改路由/鉴权/限流语义；不引入新依赖（用标准库 `os/signal` + `context`）；不动 `RegisterBuiltins` 与编译器装配；不改成「无限等待在途请求」。
-- **⑤ 验收**：真起服务（A4 授权）→ 发一个慢请求 → SIGTERM → 断言该请求在 drain 窗口内正常完成、进程退出码 0；破坏验证 = 把 `Shutdown` 改回裸 `ListenAndServe`（去掉信号捕获）⇒ 慢请求被掐断（连接 reset / 非零退出），还原复绿。`go build/vet/test ./... -count=1` 全绿。
-- **⑥ 边界**：本仓 `cmd/assetservice/main.go` 的 run/serve 段；其余四仓的停机归各自单。
-- **owner**：待定
-
 ### STRAT-AUTH-ADR · 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema [P2] ⬜
 
 - **① 目标**：给本仓的鉴权姿态补一条 ADR，把「10 条读端点公开 + 端口隔离、3 条写端点 service-token、`DecideStartup` 启动闸、promote 额外 `X-Actor`」这套**决定**固化成可追溯的架构决策，而不是只留在接口文档的行为描述里。

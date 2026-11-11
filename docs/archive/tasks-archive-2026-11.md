@@ -17,6 +17,7 @@
 | SVC-STRAT-G1 | 服务就绪门 G1：鉴权 · 公开健康端点 · 错误模型 · 版本化（ADR-036） | 2026-11-07 | —（原文未记） | [原文](#SVC-STRAT-G1) |
 | SVC-STRAT-G2 | 服务就绪门 G2：`strategy.*` 唯一 writer 与可重放迁移（ADR-036） | 2026-11-07 | —（原文未记） | [原文](#SVC-STRAT-G2) |
 | SVC-STRAT-G4 | 服务就绪门 G4：编译链路失败语义 · 超时重试 · runbook（ADR-036） | 2026-11-10 | —（原文未记） | [原文](#SVC-STRAT-G4) |
+| STRAT-GRACEFUL-SHUTDOWN | 资产服务无优雅停机，SIGTERM 直接掐断在途请求 | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-GRACEFUL-SHUTDOWN`） | [原文](#STRAT-GRACEFUL-SHUTDOWN) |
 
 ---
 
@@ -539,3 +540,25 @@
 | SPEC-R-02 | 五张无主表 owner 认领——`quant.external_signals` 不属本仓，owner = core strategy-runtime（已补 `docs/db-schema.md` §1 不属本仓行） | `tellurion:docs/TASKS.md` §九 |
 
 ---
+
+## 续档（2026-11-12 收口）
+
+<a id="STRAT-GRACEFUL-SHUTDOWN"></a>
+### STRAT-GRACEFUL-SHUTDOWN · 资产服务无优雅停机，SIGTERM 直接掐断在途请求 [P1] ✅（2026-11-12）
+
+- **① 目标**：`cmd/assetservice` 收到 SIGTERM/SIGINT 时先停止接受新连接、给在途请求一个有界 drain 窗口再退出，而不是被信号直接杀死。
+- **② 上下文（2026-11-11 全面审查 W5-F2，证据 ODR-072 `tellurion-docs:docs/archive/odr/odr-072-audit-wave5-security-reliability-deps.md`）**：`cmd/assetservice/main.go:175-189` 已建 `http.Server`（带 `ReadHeaderTimeout: 5s`）并在 `:186` 用 `errors.Is(err, http.ErrServerClosed)` 兜底，但**全文件无 `signal.Notify` / `srv.Shutdown` / `NotifyContext`**（grep 零命中）⇒ `ErrServerClosed` 分支是死代码，没有任何东西触发 `Shutdown`，SIGTERM 走默认处置直接终止进程。同批四仓（data/risk/analytics/strategy）同形缺陷，见各仓 `*-GRACEFUL-SHUTDOWN` 单。
+- **③ 要求**：① 用 `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` 或等价机制捕获终止信号；② 信号到达后调 `srv.Shutdown(drainCtx)`，drain 窗口有界（建议 ≤10s，与既有超时口径一致）；③ drain 超时则 `srv.Close()` 兜底并非零退出；④ 正常 `ListenAndServe` 返回 `ErrServerClosed` 时退出码 0（现有兜底保留）；⑤ 启动日志点名 drain 窗口时长。
+- **④ 约束与非目标**：不改路由/鉴权/限流语义；不引入新依赖（用标准库 `os/signal` + `context`）；不动 `RegisterBuiltins` 与编译器装配；不改成「无限等待在途请求」。
+- **⑤ 验收**：真起服务（A4 授权）→ 发一个慢请求 → SIGTERM → 断言该请求在 drain 窗口内正常完成、进程退出码 0；破坏验证 = 把 `Shutdown` 改回裸 `ListenAndServe`（去掉信号捕获）⇒ 慢请求被掐断（连接 reset / 非零退出），还原复绿。`go build/vet/test ./... -count=1` 全绿。
+- **⑥ 边界**：本仓 `cmd/assetservice/main.go` 的 run/serve 段；其余四仓的停机归各自单。
+- **owner**：待定
+
+> **施工记录（2026-11-12）**：
+> - **落点**：`cmd/assetservice/main.go`——新增 `shutdownDrainTimeout = 10s`；`run()` 改为先 `net.Listen` 再 `serve(ln, srv, shutdownDrainTimeout)`；新增 `serve`（`signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)`）与可测内核 `serveWithContext`（信号/ctx 取消 → `srv.Shutdown(drainCtx)`；drain 超时 → `srv.Close()` + 返回包裹 `context.DeadlineExceeded` 的错误 ⇒ 非零退出；`ErrServerClosed` → nil ⇒ 退出码 0）；启动日志新增 `drain=10s` 字段。未改路由/鉴权/限流/编译器装配。
+> - **为什么把 listener 提到 run()**：`serveWithContext` 需要预先绑定的 `net.Listener` 才能被单测确定性地连上（端口 0 由内核分配），否则测试只能用「猜端口」的写法；生产路径仍是同一个 `net.Listen` + `srv.Serve`，语义与 `ListenAndServe` 等价。
+> - **测试**：新增 `cmd/assetservice/shutdown_test.go` 两条——① 慢请求（handler 阻塞在 release channel）→ 取消 ctx（等价 SIGTERM）→ 请求仍在 drain 窗口内返回 204、`serveWithContext` 返回 nil；② handler 永不返回 → drain=100ms → `serveWithContext` 返回包裹 `context.DeadlineExceeded` 的错误（非零退出）。
+> - **验收（真实输出，本机 Windows）**：`go build ./...`、`go vet ./...` 退出码 0；`go test ./... -count=1` 全绿（7 包，`cmd/assetservice 0.426s`）；`TestServeWithContextDrainsInFlightRequest` 与 `TestServeWithContextDrainTimeoutIsNonZeroExit` PASS，日志出现 `termination signal received; draining in-flight requests drain=5s|100ms`。
+> - **破坏验证**：把 `serveWithContext` 改成裸 `return srv.Serve(ln)`（去掉信号捕获与 Shutdown）⇒ 两条用例同时红（`serveWithContext did not return after the clean drain` / `...after the drain window elapsed`，各 5s 超时）；逐字节还原后两条复绿。
+> - **如实登记**：未在本机对**真实进程**发 SIGTERM 做黑盒演练（Windows 无 unix SIGTERM 语义，`os/signal` 腿由 `serveWithContext` 等价覆盖）；Linux 容器内的 SIGTERM 行为由同一 `signal.NotifyContext` 路径承载，未在容器内单独复跑。
+

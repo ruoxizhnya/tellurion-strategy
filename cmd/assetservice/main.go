@@ -15,8 +15,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ruoxizhnya/tellurion-kit/auth"
@@ -177,13 +179,56 @@ func run() error {
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return err
+	}
 	logMode := "disabled"
 	if compiler != nil {
 		logMode = "external (cmd/compiler)"
 	}
-	slog.Info("strategy asset service listening", "addr", *addr,
-		"storage", storage, "compiler", logMode, "auth", tokens.Enabled())
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	slog.Info("strategy asset service listening", "addr", ln.Addr().String(),
+		"storage", storage, "compiler", logMode, "auth", tokens.Enabled(),
+		"drain", shutdownDrainTimeout.String())
+	return serve(ln, srv, shutdownDrainTimeout)
+}
+
+// shutdownDrainTimeout 是有界 drain 窗口：SIGTERM/SIGINT 之后给在途请求的最长
+// 宽限时间。与探针/编排侧 10s 级别的超时同口径；超时不无限等待，Close 兜底后
+// 以非零码退出。
+const shutdownDrainTimeout = 10 * time.Second
+
+// serve 在已绑定的 listener 上跑 HTTP，并在收到 SIGINT/SIGTERM 时排空在途请求。
+func serve(ln net.Listener, srv *http.Server, drain time.Duration) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serveWithContext(ctx, ln, srv, drain)
+}
+
+// serveWithContext 是 serve 的可测内核：ctx 取消等价于收到终止信号。
+// 正常收到信号并排空完成返回 nil（退出码 0）；drain 超时则 Close 后返回错误
+// （非零退出），不把「掐断在途请求」伪装成正常退出。
+func serveWithContext(ctx context.Context, ln net.Listener, srv *http.Server, drain time.Duration) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	slog.Info("termination signal received; draining in-flight requests", "drain", drain.String())
+	drainCtx, cancel := context.WithTimeout(context.Background(), drain)
+	defer cancel()
+	if err := srv.Shutdown(drainCtx); err != nil {
+		_ = srv.Close()
+		return fmt.Errorf("drain exceeded %s: %w", drain, err)
+	}
+	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
