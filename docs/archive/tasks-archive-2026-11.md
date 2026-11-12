@@ -24,6 +24,7 @@
 | X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / pgx v5.11.0 / go 1.26.11）+ govulncheck 门 | 2026-11-12 | 见本条 | [施工记录](#X-DEP-BUMP-CONSUMERS) |
 | X-AGENTS-DEPENDENCY-TABLE | `AGENTS.md` §4 依赖表按实际 `go.mod` 订正 | 2026-11-12 | 见本条 | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
 | X-CI-RACE-STATICCHECK | CI 补 `-race` 与 `staticcheck`（含 1 条存量告警清理） | 2026-11-12 | 见本条 | [施工记录](#X-CI-RACE-STATICCHECK) |
+| X-LOW-CLEANUP（strategy 腿） | Dockerfile 里的退役服务名 `strategy-service` 改为 `assetservice` | 2026-11-12 | 见本条 | [施工记录](#X-LOW-CLEANUP-strategy) |
 
 ---
 
@@ -652,6 +653,7 @@
 > - **CI**：`go-version` 改 `1.26.11`；`Vet` 之后新增 `Govulncheck` 步。
 > - **验收（真实输出）**：`govulncheck ./...` → `No vulnerabilities found` / `Your code is affected by 0 vulnerabilities`，EXIT=0；`gofmt -l .` 空；`go build/vet/test ./... -count=1` 全 EXIT=0（7 包 `ok`）。
 > - **破坏验证（真做真还原）**：`go get kit@v0.2.0 pgx@v5.7.3` + `go mod tidy` ⇒ `govulncheck` 报 `pgx/v5@v5.7.3` 可达漏洞（trace `internal/asset/pgstore.go:373` → `sanitize.SanitizeSQL`）、`Your code is affected by 1 vulnerability`，EXIT=1；从目标态备份（`%TEMP%\strategy_target_20261112`）逐字节还原，`go.mod` SHA256 `C0A48C1EF1CF10322FEC5DC56B5389DA403A54C51E54732D8DBA595ACEE1EF35`、`go.sum` `64BF59625C9CD8D82DB74A9B13ED2A45BAB63A2FE6A3C6EAF4E25270D2A963F0`，与破坏前一致，复跑 EXIT=0。
+> - **补丁（同日发现，`6edfa82`）**：`go` directive 升到 1.26.11 后，`Dockerfile` / `Dockerfile.compiler` 仍是 `golang:1.25-alpine` 且 `GOTOOLCHAIN=local`，`docker build` 在 `go mod download` 处硬失败（`go.mod requires go >= 1.26.11 (running go 1.25.14)`）。两处 builder 同步升 `golang:1.26.11-alpine`，实建通过、镜像内 `/app/strategy-service` 可执行。
 > - **边界**：只动本仓 `go.mod`/`go.sum`/CI/文档；未触碰当时未推送的 `7521613`。
 
 <a id="X-AGENTS-DEPENDENCY-TABLE"></a>
@@ -672,3 +674,14 @@
 > - **验收（真实输出）**：`gofmt -l .` 空；`go build/vet ./...` EXIT=0；`staticcheck ./...` EXIT=0；`go test ./... -count=1` 7 包全 `ok`。
 > - **`-race` 本地覆盖（Docker 容器，非仅 CI）**：`docker run --rm -v <repo>:/tellurion-strategy -w /tellurion-strategy golang:1.26 sh -c "go test -race ./... -count=1"` → 7 包全 `ok`、EXIT=0。
 > - **边界**：只动本仓 CI 与一条测试死字段；contracts / ui 的门由各自伞腿承担。
+
+---
+
+<a id="X-LOW-CLEANUP-strategy"></a>
+### X-LOW-CLEANUP（strategy 腿）· Dockerfile 退役服务名（跨仓伞 `tellurion:X-LOW-CLEANUP`）
+
+> **施工记录（2026-11-12）**：
+> - **原文定位**：`tellurion:docs/archive/odr/odr-069-audit-wave2-core-architecture.md` 索引表第 36 行「W2-F7 | strategy Dockerfile 退役名」。原表只有一句话，无行号；按 `strategy-service` 全仓 grep，唯一命中就是本仓 `Dockerfile`（`-o /out/strategy-service` / `COPY` / `ENTRYPOINT`），核对该名正是 core 已退役的外部服务名（ADR-012），与 `cmd/assetservice` 的实际进程名不符。
+> - **改了什么**：`Dockerfile` 里三处产物名 `strategy-service → assetservice`（构建产物 / COPY / ENTRYPOINT）。容器内路径随之变为 `/app/assetservice`；`deploy/compose.yaml` 只用 `build:`，不引用二进制名，无需联动。`Dockerfile.compiler` 的 `compiler` 是真实在用的批处理进程，**不改**。
+> - **验收（真实执行）**：`docker build -f Dockerfile -t tellurion-strategy:xlc-check .` 成功；`docker run --rm --entrypoint /app/assetservice <img> --help` 正常打印 flag 列表（`-addr` 默认 `127.0.0.1:8090`），证明入口名与新产物名一致。
+> - **边界**：只改本仓 `Dockerfile` 三行；不动 compose、不动 `cmd/assetservice` 源码、不动历史归档原文。

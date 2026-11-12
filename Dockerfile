@@ -16,7 +16,7 @@ ARG BUILD_TIME=unknown
 ENV CGO_ENABLED=0 GOOS=linux
 RUN go build -trimpath \
     -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildTime=${BUILD_TIME}" \
-    -o /out/strategy-service ./cmd/assetservice
+    -o /out/assetservice ./cmd/assetservice
 
 FROM alpine:3.19
 
@@ -26,7 +26,7 @@ RUN apk add --no-cache ca-certificates curl tzdata && \
     echo "Asia/Shanghai" > /etc/timezone && \
     rm -rf /var/cache/apk/*
 
-COPY --from=builder /out/strategy-service /app/strategy-service
+COPY --from=builder /out/assetservice /app/assetservice
 
 # 非 root 运行（USER nobody）。两处可写目录：
 #   - /data/artifacts：compose 挂命名卷；镜像内先建好并 chown，空卷首次挂载会继承该属主。
@@ -44,4 +44,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8090/readyz || exit 1
 
 USER nobody
-ENTRYPOINT ["/app/strategy-service"]
+ENTRYPOINT ["/app/assetservice"]
