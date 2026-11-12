@@ -864,13 +864,14 @@ func TestService_ValidateRejectsAndPromoteRequiresValidated(t *testing.T) {
 	}
 }
 
-// TestService_PromoteRejectsArtifactlessCarrier 固化「无 artifact 载体不开放
-// 版本级 promote」的裁决（2026-11-10）：builtin / dsl / external 没有本仓产出
-// 的字节码，promote 必须 fail-closed 且点名载体，不许留下「已批准但没有资产」
-// 的放行位。AI 产物按 QT-32 ② 一律编译成 wasm 后走同一端点。
-func TestService_PromoteRejectsArtifactlessCarrier(t *testing.T) {
+// TestService_PromoteArtifactlessCarriers 固化无 artifact 载体的两档裁决
+// （ADR-0006，2026-11-12 修订 2026-11-10 的「一律拒绝」）：
+//   - builtin 是编译进二进制的实现指针，允许版本级激活，active_artifact_hash
+//     保持空，resolve 按 entry 名解析；
+//   - dsl / external 没有本仓运行时实现，仍 fail-closed 且点名载体。
+func TestService_PromoteArtifactlessCarriers(t *testing.T) {
 	ctx := context.Background()
-	for _, carrier := range []Carrier{CarrierDSL, CarrierBuiltin, CarrierExternal} {
+	for _, carrier := range []Carrier{CarrierDSL, CarrierExternal} {
 		t.Run(string(carrier), func(t *testing.T) {
 			svc, store := newHarness(t, nil)
 			def, err := svc.CreateDefinition(ctx, CreateDefinitionRequest{
@@ -893,6 +894,41 @@ func TestService_PromoteRejectsArtifactlessCarrier(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run(string(CarrierBuiltin), func(t *testing.T) {
+		svc, store := newHarness(t, nil)
+		def, err := svc.CreateDefinition(ctx, CreateDefinitionRequest{
+			Carrier: CarrierBuiltin, Scope: contracts.ScopeSymbol, Entry: "momentum",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := mustPutSource(t, svc, def.ID, "momentum@builtin")
+		artifact, err := svc.Promote(ctx, def.ID, v.VersionHash, "")
+		if err != nil {
+			t.Fatalf("Promote(builtin): %v", err)
+		}
+		if artifact.Status != StatusPromoted || artifact.ArtifactHash != "" || artifact.Carrier != CarrierBuiltin {
+			t.Fatalf("promote view = %+v", artifact)
+		}
+		got, err := store.GetDefinition(ctx, def.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ActiveVersionHash != v.VersionHash || got.ActiveArtifactHash != "" {
+			t.Fatalf("active pointers = %q/%q, want %q/\"\"",
+				got.ActiveVersionHash, got.ActiveArtifactHash, v.VersionHash)
+		}
+		resolved, err := svc.Resolve(ctx, def.ID, "latest")
+		if err != nil {
+			t.Fatalf("Resolve(latest): %v", err)
+		}
+		if resolved.Carrier != CarrierBuiltin || resolved.ArtifactHash != "" ||
+			resolved.Entry != "momentum" || resolved.VersionHash != v.VersionHash ||
+			resolved.Status != StatusPromoted {
+			t.Fatalf("resolve = %+v", resolved)
+		}
+	})
 }
 
 func TestService_MultipleToolchainsRequireExplicitChoice(t *testing.T) {
@@ -1113,6 +1149,10 @@ func TestMigrations_PinTheAdjudicatedShape(t *testing.T) {
 		"CHECK (status IN ('built','validated','promoted','rejected','deprecated'))",
 		"CREATE TABLE IF NOT EXISTS strategy.strategy_build_jobs",
 		"CHECK (state IN ('queued','running','succeeded','failed'))",
+		// ADR-0006：builtin 的版本级激活（有 version、无 artifact）必须被约束显式
+		// 放行；旧 CHECK 仍在建表语句里，故这里钉的是追加的那条具名约束。
+		"strategy_definitions_active_ck",
+		"active_artifact_hash IS NULL AND carrier = 'builtin'",
 	} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("DDL is missing %q", want)

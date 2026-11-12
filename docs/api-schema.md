@@ -54,12 +54,18 @@ verified-by: 2026-11-12 写侧收紧落地——13 业务端点 = 5 条公开读
 
 > `validate` / `promote` / `deprecate` / `artifact` 接受可选 body `{"toolchain": "..."}`（`artifact` 用同名 query 参数）；
 > 同一版本有多个工具链产物且未指定 toolchain 时返回 `409 ambiguous_artifact`，**不替调用方猜**。
+>
+> **builtin 载体（ADR-0006）**：builtin 是「内置载体指针」，实现编译在二进制里，**不产 artifact 是本质**。
+> 因此 `build` 对它始终 400 `unsupported_carrier`（文案指向 `validate → promote`）；`validate` 校验定义 / 源 /
+> capability 的结构契约、`promote` 只写 `active_version_hash`（`active_artifact_hash` 保持空）、`resolve` 回
+> `carrier=builtin` + `entry` 且 `artifact_hash=""`。`dsl` / `external` **没有**这条路径：validate 仍 404
+> `artifact_not_found`、promote 仍 400 `unsupported_carrier`（本仓没有它们的运行时实现，放开才会是假绿灯）。
 
 ### 读侧（引擎用前两个；promotions 供回测入口的 AI 闸门）
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/api/strategies/{id}/resolve?ref={hash\|latest}` | 解析 `strategy_ref` → 元数据（含 `artifact_hash` / `scope` / `capability` / `imports` / **`status`**） |
+| GET | `/api/strategies/{id}/resolve?ref={hash\|latest}` | 解析 `strategy_ref` → 元数据（含 `artifact_hash` / `entry` / `scope` / `capability` / `imports` / **`status`**） |
 | GET | `/api/strategies/{id}/versions/{hash}/artifact` | 下载字节码（响应头 `X-Artifact-Hash`，支持 `ETag` / `If-None-Match` → 304） |
 | GET | `/api/strategies/{id}/promotions?version_hash=&limit=&offset=` | promote 审计读面（K11 前置）：谁 / 何时 / 结论，新的在前 |
 
@@ -70,6 +76,11 @@ verified-by: 2026-11-12 写侧收紧落地——13 业务端点 = 5 条公开读
 > 消费方（core 回测入口）必须 `status == promoted` 才继续；**不得用 definition 的 latest 指针或
 > `strategies.is_active` 冒充审批**。promotions 审计与 resolve 是两个读面：resolve 回状态，
 > `/promotions` 回审批留痕（缺留痕同样是拒绝条件，见 core `QT-32` K11）。
+>
+> **builtin 的 resolve（ADR-0006）**：生效指针只有 `active_version_hash`，因此 `artifact_hash` 为 `""`、
+> `carrier` 为 `builtin`、`status` 为 `promoted`，并回 `entry` 供运行时解析二进制内实现；`size_bytes` /
+> `memory_limit_bytes` / `imports` / `toolchain` 在这条路径上没有意义，按零值返回。`ref=<hash>` 只接受
+> **当前 active 版本**的 hash，其余版本给 404 `no_active_version`（与 wasm/so「该版本没有 promoted artifact」同语义）。
 
 ### 探针（公开、无鉴权、不限流）
 
@@ -161,7 +172,7 @@ verified-by: 2026-11-12 写侧收紧落地——13 业务端点 = 5 条公开读
 | 编译失败 | 409 + `compile_failed` | 拒绝 |
 | 源码 / 产物超限 | 413 + `payload_too_large` | 拒绝 |
 | 编译服务未配置 | 503 + `compile_unavailable` | 拒绝 |
-| 载体不支持（含对 builtin / dsl / external 调 promote） | 400 + `unsupported_carrier` | 拒绝；无 artifact 载体没有可审批的产物（2026-11-10 裁决） |
+| 载体不支持（builtin 调 build；dsl / external 调 validate 之外的激活路径，或 dsl / external 调 promote） | 400 + `unsupported_carrier` | 拒绝；builtin 无 artifact 但走 validate → promote（ADR-0006），dsl / external 没有本仓运行时实现，仍无审批路径 |
 | `abi_version` 不在 `on_bar/1\|2` | 400 + `invalid_abi_version` | 拒绝 |
 | `scope` 非法 / v1 声明 market | 400 + `invalid_scope` | 拒绝 |
 | 源码为空 | 400 + `source_required` | 拒绝 |
@@ -403,9 +414,9 @@ QT-41b ③-⑤ 那句「Resolve/Fetch/Verify/Mount 分界」漏了 Compile 且�
 |---|---|---|---|
 | 1 | `POST /api/strategies` | v1 | 400 `invalid_request` / `unsupported_carrier` / `invalid_abi_version` / `invalid_scope`；409 `strategy_exists` |
 | 2 | `PUT /api/strategies/{id}/source` | v1 | 400 `invalid_request` / `source_required`；404 `strategy_not_found`；409 `storage_unsupported`；413 `payload_too_large` |
-| 3 | `POST /api/strategies/{id}/build` | v1 | 400 `invalid_request` / `unsupported_carrier` / `unsupported_toolchain`；404 `version_not_found`；503 `compile_unavailable` |
-| 4 | `POST /api/strategies/{id}/versions/{hash}/validate` | v1 | 400 `invalid_request` / `unsupported_toolchain`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `artifact_invalid` / `imports_not_allowed` |
-| 5 | `POST /api/strategies/{id}/versions/{hash}/promote` | v1 | 400 `invalid_request` / `actor_required`；401 `unauthenticated`；403 `forbidden`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `artifact_invalid` / `imports_not_allowed` / `invalid_transition`；500 `audit_failed`；503 `auth_unavailable` |
+| 3 | `POST /api/strategies/{id}/build` | v1 | 400 `invalid_request` / `unsupported_carrier` / `unsupported_toolchain`；404 `version_not_found`；503 `compile_unavailable`。**builtin 恒 400**，文案指向 `validate → promote`（ADR-0006） |
+| 4 | `POST /api/strategies/{id}/versions/{hash}/validate` | v1 | 400 `invalid_request` / `unsupported_toolchain`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `artifact_invalid` / `imports_not_allowed`。**builtin 不产 404 `artifact_not_found`**：改校验定义 / 源 / capability 结构契约，回 200 且 `artifact_hash=""`（ADR-0006） |
+| 5 | `POST /api/strategies/{id}/versions/{hash}/promote` | v1 | 400 `invalid_request` / `actor_required`；401 `unauthenticated`；403 `forbidden`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `artifact_invalid` / `imports_not_allowed` / `invalid_transition`；500 `audit_failed`；503 `auth_unavailable`。**builtin 允许版本级激活**：只写 `active_version_hash`，回 200 且 `artifact_hash=""`（ADR-0006）；dsl / external 仍 400 `unsupported_carrier` |
 | 6 | `POST /api/strategies/{id}/versions/{hash}/deprecate` | v1 | 400 `invalid_request`；404 `strategy_not_found` / `version_not_found` / `artifact_not_found`；409 `ambiguous_artifact` / `invalid_transition` |
 | 7 | `GET /api/strategies/{id}/versions` | v1 | 400 `invalid_request`（分页参数）；404 `strategy_not_found` |
 | 8 | `GET /api/strategies/{id}/builds/{job_id}` | v1 | 404 `job_not_found` |

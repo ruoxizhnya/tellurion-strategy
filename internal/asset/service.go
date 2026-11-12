@@ -225,6 +225,12 @@ func (s *Service) SubmitBuild(ctx context.Context, id, versionHash, toolchain st
 		return BuildJob{}, err
 	}
 	if !def.Carrier.NeedsArtifact() {
+		if def.Carrier == CarrierBuiltin {
+			// builtin 不产 artifact 是本质：它编译在二进制里。构建入口仍然拒绝，
+			// 但把下一步说清楚（ADR-0006）。
+			return BuildJob{}, fmt.Errorf("%w: carrier builtin needs no build; use validate then promote (runtime resolves the in-binary implementation by entry %q)",
+				ErrUnsupportedCarrier, def.Entry)
+		}
 		return BuildJob{}, fmt.Errorf("%w: carrier %s produces no artifact", ErrUnsupportedCarrier, def.Carrier)
 	}
 	version, err := s.store.GetVersion(ctx, id, versionHash)
@@ -451,6 +457,22 @@ func (s *Service) Job(ctx context.Context, jobID string) (BuildJob, error) {
 func (s *Service) ValidateVersion(ctx context.Context, id, versionHash, toolchain string) (Artifact, error) {
 	a, err := s.pickArtifact(ctx, id, versionHash, toolchain)
 	if err != nil {
+		// builtin 没有 artifact 行，validate 走「版本级结构契约」而不是字节门
+		// （ADR-0006）。只有确实找不到 artifact 时才落到这个分支；wasm / so 的
+		// 字节校验路径一行未改。
+		if errors.Is(err, ErrArtifactNotFound) {
+			def, derr := s.store.GetDefinition(ctx, id)
+			if derr == nil && def.Carrier == CarrierBuiltin {
+				version, verr := s.store.GetVersion(ctx, id, versionHash)
+				if verr != nil {
+					return Artifact{}, verr
+				}
+				if verr := validateBuiltinActivation(def, version); verr != nil {
+					return Artifact{}, verr
+				}
+				return builtinArtifact(def, version, StatusValidated), nil
+			}
+		}
 		return Artifact{}, err
 	}
 	// 元数据接口不带字节：校验门必须拿到真实字节，不能拿「有这行」当通过。
@@ -481,13 +503,33 @@ func (s *Service) Promote(ctx context.Context, id, versionHash, toolchain string
 	if err != nil {
 		return Artifact{}, err
 	}
-	// 无 artifact 载体（builtin / dsl / external）**不开放**版本级 promote
-	// （2026-11-10 裁决，待主任追认）：审批态是产物级状态机，没有字节码就没有
-	// 「被批准的可执行资产」；若给这三类载体开版本级放行，resolve 只能回一个空
-	// artifact_hash，回测入口的 promoted 判据会变成假绿灯。AI 产物按 QT-32 ②
-	// 一律经 QT-41b 编译成 wasm 后走本端点，因此这里 fail-closed 且点名载体。
+	// builtin 走**版本级激活**（ADR-0006，2026-11-12 裁决 supersedes 2026-11-10
+	// 的「无 artifact 一律不 promote」）：builtin 的实现编译在二进制里，运行时按
+	// entry 名解析，所以「active 版本 + 空 artifact_hash」是可执行的完整解析，
+	// 不是缺字节的假绿灯。激活前重跑一遍结构契约（validate 结论不落库，重算
+	// 才是确定性的），然后只写 active_version_hash，active_artifact_hash 保持空。
+	if def.Carrier == CarrierBuiltin {
+		version, err := s.store.GetVersion(ctx, id, versionHash)
+		if err != nil {
+			return Artifact{}, err
+		}
+		if err := validateBuiltinActivation(def, version); err != nil {
+			return Artifact{}, err
+		}
+		if err := s.store.SetActive(ctx, id, versionHash, ""); err != nil {
+			return Artifact{}, err
+		}
+		if s.cache != nil {
+			s.cache.InvalidateLatest(id)
+		}
+		return builtinArtifact(def, version, StatusPromoted), nil
+	}
+	// 其余无 artifact 载体（dsl / external）**仍不开放**版本级 promote：本仓
+	// 没有它们的运行时实现，回一个空 artifact_hash 才会真的变成假绿灯；AI 产物
+	// 按 QT-32 ② 一律经 QT-41b 编译成 wasm 后走本端点，因此这里 fail-closed
+	// 且点名载体。
 	if !def.Carrier.NeedsArtifact() {
-		return Artifact{}, fmt.Errorf("%w: carrier %s produces no artifact; promote is defined for wasm|so",
+		return Artifact{}, fmt.Errorf("%w: carrier %s produces no artifact; promote is defined for wasm|so and builtin",
 			ErrUnsupportedCarrier, def.Carrier)
 	}
 	a, err := s.pickArtifact(ctx, id, versionHash, toolchain)
@@ -595,7 +637,24 @@ func (s *Service) Resolve(ctx context.Context, id, ref string) (ResolveResult, e
 		return ResolveResult{}, err
 	}
 	if parsed.IsLatest() {
-		if def.ActiveVersionHash == "" || def.ActiveArtifactHash == "" {
+		if def.ActiveVersionHash == "" {
+			return ResolveResult{}, fmt.Errorf("%w: %s", ErrNoActiveVersion, id)
+		}
+		// builtin 的生效指针只有 version：active_artifact_hash 为空是契约的一部分
+		// （ADR-0006）。运行时按 entry 名解析内置实现，size / imports / toolchain
+		// 都没有意义，这里明确回空而不是漏字段。
+		if def.Carrier == CarrierBuiltin {
+			version, err := s.store.GetVersion(ctx, id, def.ActiveVersionHash)
+			if err != nil {
+				return ResolveResult{}, err
+			}
+			result := builtinResolveResult(def, version)
+			if s.cache != nil {
+				s.cache.PutLatest(id, result)
+			}
+			return result, nil
+		}
+		if def.ActiveArtifactHash == "" {
 			return ResolveResult{}, fmt.Errorf("%w: %s", ErrNoActiveVersion, id)
 		}
 		a, err := s.store.GetArtifact(ctx, id, def.ActiveArtifactHash)
@@ -616,6 +675,19 @@ func (s *Service) Resolve(ctx context.Context, id, ref string) (ResolveResult, e
 		return buildResolveResult(def, a), nil
 	} else if !errors.Is(err, ErrArtifactNotFound) {
 		return ResolveResult{}, err
+	}
+
+	// builtin 没有 artifact 可按；hash 只能是版本 hash，且必须是当前生效版本，
+	// 否则给 no_active_version（与 wasm/so 的「版本无 promoted artifact」同语义）。
+	if def.Carrier == CarrierBuiltin {
+		version, err := s.store.GetVersion(ctx, id, parsed.Hash)
+		if err != nil {
+			return ResolveResult{}, err
+		}
+		if def.ActiveVersionHash != version.VersionHash {
+			return ResolveResult{}, fmt.Errorf("%w: version %s is not the active builtin version", ErrNoActiveVersion, parsed.Hash)
+		}
+		return builtinResolveResult(def, version), nil
 	}
 
 	if _, err := s.store.GetVersion(ctx, id, parsed.Hash); err != nil {
@@ -739,11 +811,40 @@ func buildResolveResult(def Definition, a Artifact) ResolveResult {
 		ABIVersion:   a.ABIVersion,
 		Scope:        def.Scope,
 		Capability:   def.Capability.Clone(),
+		Entry:        def.Entry,
 		SizeBytes:    a.SizeBytes,
 		MemoryLimit:  a.MemoryLimitBytes,
 		Imports:      append([]string(nil), a.Imports...),
 		Toolchain:    a.Toolchain,
 		Status:       a.Status,
+	}
+}
+
+// builtinResolveResult 是 builtin 的解析结果：无 artifact，运行时按 entry 名
+// 解析内置实现（ADR-0006）。Status 取 promoted——生效指针就是审批结论本身。
+func builtinResolveResult(def Definition, v Version) ResolveResult {
+	return ResolveResult{
+		StrategyID:   def.ID,
+		VersionHash:  v.VersionHash,
+		ArtifactHash: "",
+		Carrier:      def.Carrier,
+		ABIVersion:   def.ABIVersion,
+		Scope:        def.Scope,
+		Capability:   def.Capability.Clone(),
+		Entry:        def.Entry,
+		Status:       StatusPromoted,
+	}
+}
+
+// builtinArtifact 给 validate / promote 回一个「无字节码的产物视图」：只有
+// 身份与状态，artifact_hash 为空是语义的一部分，不是占位符。
+func builtinArtifact(def Definition, v Version, status Status) Artifact {
+	return Artifact{
+		StrategyID:  def.ID,
+		VersionHash: v.VersionHash,
+		Carrier:     def.Carrier,
+		ABIVersion:  def.ABIVersion,
+		Status:      status,
 	}
 }
 

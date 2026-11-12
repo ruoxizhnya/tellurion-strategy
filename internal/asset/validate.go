@@ -2,8 +2,10 @@ package asset
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	contracts "github.com/ruoxizhnya/tellurion-contracts/engine"
 )
@@ -145,4 +147,75 @@ func sameStringSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// builtinEntryPattern 是 builtin 入口名的符号规则：运行时要拿它去二进制里找
+// 已注册的实现，所以必须是一个标识符（允许 `.` 分隔的命名空间写法）。
+var builtinEntryPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`)
+
+// validateBuiltinActivation 校验 builtin 的「可激活」契约（ADR-0006）。
+//
+// builtin 是编译进二进制的内置实现指针：不产 artifact 是它的本质。因此这里
+// 不要求字节码，也不发明源语言，只钉住三件可机械检查的事：
+//   - entry 是合法符号名（运行时按名字解析实现）；
+//   - 版本记录与定义形状一致（carrier / abi_version / scope / entry 不许漂移）；
+//   - capability 声明闭合（无空白项、无重复项），source 是合法 UTF-8 文本
+//     （builtin 的 source 是登记说明/指针，不是可执行代码；「能解析」= 不是乱码）。
+func validateBuiltinActivation(def Definition, version Version) error {
+	if def.Carrier != CarrierBuiltin {
+		return fmt.Errorf("%w: carrier %s has no builtin activation path", ErrUnsupportedCarrier, def.Carrier)
+	}
+	if err := def.Validate(); err != nil {
+		return err
+	}
+	if !builtinEntryPattern.MatchString(def.Entry) {
+		return fmt.Errorf("%w: builtin entry %q is not a valid symbol name", ErrInvalidDefinition, def.Entry)
+	}
+	if version.Carrier != def.Carrier || version.Entry != def.Entry ||
+		version.ABIVersion != def.ABIVersion || version.Scope != def.Scope {
+		return fmt.Errorf("%w: version %s does not match the definition shape",
+			ErrInvalidDefinition, version.VersionHash)
+	}
+	if err := validateCapabilityClosed(def.Capability); err != nil {
+		return err
+	}
+	return validateBuiltinSource(version.Source)
+}
+
+func validateCapabilityClosed(c Capability) error {
+	groups := []struct {
+		name   string
+		values []string
+	}{
+		{"frequencies", c.Frequencies},
+		{"markets", c.Markets},
+		{"features", c.Features},
+	}
+	for _, group := range groups {
+		seen := make(map[string]struct{}, len(group.values))
+		for _, raw := range group.values {
+			v := strings.TrimSpace(raw)
+			if v == "" {
+				return fmt.Errorf("%w: capability.%s contains a blank entry", ErrInvalidDefinition, group.name)
+			}
+			if _, dup := seen[v]; dup {
+				return fmt.Errorf("%w: capability.%s repeats %q", ErrInvalidDefinition, group.name, v)
+			}
+			seen[v] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validateBuiltinSource(source string) error {
+	if !utf8.ValidString(source) {
+		return fmt.Errorf("%w: builtin source is not valid UTF-8", ErrInvalidDefinition)
+	}
+	if strings.ContainsRune(source, 0) {
+		return fmt.Errorf("%w: builtin source contains a NUL byte", ErrInvalidDefinition)
+	}
+	if strings.TrimSpace(source) == "" {
+		return fmt.Errorf("%w: builtin source is required (it records the in-binary implementation pointer)", ErrInvalidDefinition)
+	}
+	return nil
 }

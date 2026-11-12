@@ -1,7 +1,7 @@
 ---
 status: active
-last-verified: 2026-11-11
-verified-by: 文档对齐审计——K5 对照表按 core `strategies` 表 2026-11-09 退役（SVC-CORE-STRAT-RETIRE）改为历史对照；contracts pin 升 `v0.9.0`；`quant.external_signals` 仍属 core（Migration 048 在世）
+last-verified: 2026-11-12
+verified-by: 文档对齐审计——builtin 版本级激活（ADR-0006）追加 `strategy_definitions_active_ck`，取代建表语句里「版本/artifact 同生同灭」的旧 CHECK；其余表结构与 2026-11-11 复核一致
 ---
 
 # DB Schema — tellurion-strategy
@@ -23,6 +23,10 @@ verified-by: 文档对齐审计——K5 对照表按 core `strategies` 表 2026-
 | `quant.external_signals` | 外部模型信号注入（`content_hash` 幂等去重，`SignalStrategy` 按 `as_of` 拉取） | **不属本仓** · owner = **core strategy-runtime 模块**（与 H5 裁决的 `quant.strategy_state` 同源，SPEC-R-02）；DDL 在 `tellurion:pkg/storage/postgres.go`（Migration 048），写者 `tellurion:pkg/strategy/signal_store.go` |
 
 约束：
+- `strategy_definitions`：`(active_version_hash IS NULL) = (active_artifact_hash IS NULL)` 是建表语句里的旧约束，
+  已由追加迁移 `strategy_definitions_active_ck` **取代**（ADR-0006，2026-11-12）：允许
+  `active_version_hash IS NOT NULL AND active_artifact_hash IS NULL AND carrier = 'builtin'`——builtin 的实现编译在
+  二进制里，版本级激活本来就没有 artifact。wasm / so 仍要求两者同时出现；清空（deprecate）仍要求两者一起清。
 - `strategy_versions`：`PRIMARY KEY (strategy_id, version_hash)`。
 - `strategy_artifacts`：`PRIMARY KEY (strategy_id, artifact_hash)` + `UNIQUE (strategy_id, version_hash, toolchain)`；
   字节相同即同一 artifact（内容寻址优先），同版本同工具链不允许第二份字节。
@@ -114,6 +118,9 @@ QT-20 的 run 级参数投递。本仓登记 14 条 `carrier=builtin` 是**可�
 - **#1 新列 6 vs 7（2026-10-23）**：**补 `active_artifact_hash` 第 7 列**，并用 `CHECK ((active_version_hash IS NULL) = (active_artifact_hash IS NULL))`
   钉住「要么都没有、要么都有」。理由：resolve 要能不查 artifact 行就回答「当前生效的是哪个字节」；靠 `status='promoted'` 反查在两工具链场景下不唯一。
   裁决落 `docs/adr/0002-artifact-主键与生效字节的裁决.md`。
+- **builtin 的版本级激活（2026-11-12）**：追加迁移把上述 CHECK 换成具名的 `strategy_definitions_active_ck`，
+  为 `carrier='builtin'` 放行「有 `active_version_hash`、无 `active_artifact_hash`」。理由与替代方案见
+  `docs/adr/0006-builtin无artifact激活路径.md`；wasm / so 的「两者同时出现」未被放宽。
 - **artifact 主键（2026-10-23，同上 ADR）**：`PRIMARY KEY (strategy_id, artifact_hash)` + `UNIQUE (strategy_id, version_hash, toolchain)`。
   同源码 × 两工具链 → 两行可分别追溯；同字节跨工具链不产生第二行（内容寻址优先，谁编译的以该行 `toolchain` 为准，
   不允许同一份字节出现两条互相矛盾的「编译来源」）。

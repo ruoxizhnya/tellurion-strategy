@@ -112,4 +112,26 @@ var migrationStatements = []string{
 		outcome       TEXT NOT NULL CHECK (outcome <> ''),
 		decided_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`,
+
+	// ADR-0006（2026-11-12）：builtin 走无 artifact 的版本级激活，允许「有
+	// active_version_hash、无 active_artifact_hash」。旧 CHECK 把两者绑死，使
+	// builtin 永远拿不到 active 版本。先删旧约束（建表语句里的自动命名），再按
+	// 名字建带语义的新约束；DO 块整体可重入，重复启动不会失败。
+	`DO $$
+	BEGIN
+		ALTER TABLE strategy.strategy_definitions
+			DROP CONSTRAINT IF EXISTS strategy_definitions_check;
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			 WHERE conrelid = 'strategy.strategy_definitions'::regclass
+			   AND conname = 'strategy_definitions_active_ck'
+		) THEN
+			ALTER TABLE strategy.strategy_definitions
+				ADD CONSTRAINT strategy_definitions_active_ck CHECK (
+					(active_version_hash IS NULL AND active_artifact_hash IS NULL)
+					OR (active_version_hash IS NOT NULL AND active_artifact_hash IS NOT NULL)
+					OR (active_version_hash IS NOT NULL AND active_artifact_hash IS NULL AND carrier = 'builtin')
+				);
+		END IF;
+	END $$`,
 }

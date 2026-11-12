@@ -113,6 +113,10 @@ func (m *Memory) GetDefinition(ctx context.Context, id string) (Definition, erro
 }
 
 // SetActive 写 active_version_hash / active_artifact_hash；空串 = 清空（deprecate）。
+//
+// builtin 是唯一允许「有 active 版本、无 active artifact」的载体（ADR-0006）：
+// 它的实现编译在二进制里，active_artifact_hash 为空是契约的一部分。wasm / so
+// 仍要求两者同时出现，防止版本指针指向不存在的字节。
 func (m *Memory) SetActive(ctx context.Context, id, versionHash, artifactHash string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -124,7 +128,9 @@ func (m *Memory) SetActive(ctx context.Context, id, versionHash, artifactHash st
 		return err
 	}
 	if (versionHash == "") != (artifactHash == "") {
-		return fmt.Errorf("%w: active version and artifact must be set or cleared together", ErrInvalidDefinition)
+		if versionHash == "" || s.def.Carrier != CarrierBuiltin {
+			return fmt.Errorf("%w: active version and artifact must be set or cleared together", ErrInvalidDefinition)
+		}
 	}
 	s.def.ActiveVersionHash = versionHash
 	s.def.ActiveArtifactHash = artifactHash

@@ -565,7 +565,13 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 	builtinID := createDefinition(t, srv, nil, map[string]any{
 		"carrier": "builtin", "scope": "symbol", "entry": "OnBar",
 	})
-	builtinVersion := putSource(t, srv, nil, builtinID, "package strategy")
+	putSource(t, srv, nil, builtinID, "package strategy")
+
+	// dsl 仍是无 artifact 且无激活路径的载体（ADR-0006）：promote 必须继续拒绝。
+	dslID := createDefinition(t, srv, nil, map[string]any{
+		"carrier": "dsl", "scope": "symbol", "entry": "OnBar",
+	})
+	dslVersion := putSource(t, srv, nil, dslID, "momentum(x) > 0")
 
 	validRef := "other@" + strings.Repeat("a", 64)
 
@@ -593,7 +599,7 @@ func TestAPI_ErrorWireCodes(t *testing.T) {
 		{"promote without artifact", http.MethodPost,
 			"/api/strategies/" + wasmID + "/versions/" + wasmVersion + "/promote", nil, 404, "artifact_not_found"},
 		{"promote artifactless carrier", http.MethodPost,
-			"/api/strategies/" + builtinID + "/versions/" + builtinVersion + "/promote", nil, 400, "unsupported_carrier"},
+			"/api/strategies/" + dslID + "/versions/" + dslVersion + "/promote", nil, 400, "unsupported_carrier"},
 		{"download without artifact", http.MethodGet,
 			"/api/strategies/" + wasmID + "/versions/" + wasmVersion + "/artifact", nil, 404, "artifact_not_found"},
 		{"unknown field", http.MethodPost, "/api/strategies",

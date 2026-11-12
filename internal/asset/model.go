@@ -233,10 +233,13 @@ type ResolveResult struct {
 	ABIVersion   string                  `json:"abi_version"`
 	Scope        contracts.StrategyScope `json:"scope"`
 	Capability   Capability              `json:"capability"`
-	SizeBytes    int64                   `json:"size_bytes"`
-	MemoryLimit  int64                   `json:"memory_limit_bytes"`
-	Imports      []string                `json:"imports"`
-	Toolchain    string                  `json:"toolchain"`
+	// Entry 是运行时要解析的入口名。artifact 载体由定义给出；builtin 无 artifact，
+	// 运行时**只**按 entry 名解析编译进二进制的实现（ADR-0006）。
+	Entry       string   `json:"entry"`
+	SizeBytes   int64    `json:"size_bytes"`
+	MemoryLimit int64    `json:"memory_limit_bytes"`
+	Imports     []string `json:"imports"`
+	Toolchain   string   `json:"toolchain"`
 	// Status 是解析到的那一行 artifact 的审批态（built/validated/promoted/
 	// rejected/deprecated）。它是**版本级闸门**的判据：调用方（core 回测入口）
 	// 必须在 status != promoted 时 fail-closed，不得拿 latest 的指针冒充审批。

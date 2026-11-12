@@ -119,7 +119,23 @@ func (p *PG) SetActive(ctx context.Context, id, versionHash, artifactHash string
 		return err
 	}
 	if (versionHash == "") != (artifactHash == "") {
-		return fmt.Errorf("%w: active version and artifact must be set or cleared together", ErrInvalidDefinition)
+		// builtin 是唯一允许「有 active 版本、无 active artifact」的载体（ADR-0006）。
+		// 版本级清空（deprecate）仍要求两者一起清。
+		if versionHash == "" {
+			return fmt.Errorf("%w: active version and artifact must be set or cleared together", ErrInvalidDefinition)
+		}
+		var carrier string
+		err := p.pool.QueryRow(ctx,
+			`SELECT carrier FROM strategy.strategy_definitions WHERE id = $1`, id).Scan(&carrier)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: %q", ErrStrategyNotFound, id)
+		}
+		if err != nil {
+			return err
+		}
+		if Carrier(carrier) != CarrierBuiltin {
+			return fmt.Errorf("%w: carrier %s needs an artifact with its active version", ErrInvalidDefinition, carrier)
+		}
 	}
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE strategy.strategy_definitions
