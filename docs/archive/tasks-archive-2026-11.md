@@ -21,6 +21,9 @@
 | STRAT-AUTH-ADR | 鉴权姿态无 ADR，10 条公开端点的边界决定只散在 api-schema | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-AUTH-ADR`） | [原文](#STRAT-AUTH-ADR)；[ADR-0005](adr/0005-鉴权姿态与端口隔离边界.md) |
 | STRAT-READYZ-PROBE | 健康探针是 TCP `nc -z`，端口开着就算健康（活≠就绪） | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-READYZ-PROBE`） | [原文](#STRAT-READYZ-PROBE) |
 | STRAT-WRITE-AUTH-ROLLOUT | 5 条公开写端点收紧为 service token（跨仓两步走） | 2026-11-12 | —（本单 commit 见 `git log --grep=STRAT-WRITE-AUTH-ROLLOUT`；agent 侧前置 `tellurion-agent@a59631e`） | [原文](#STRAT-WRITE-AUTH-ROLLOUT)；[ADR-0005](adr/0005-鉴权姿态与端口隔离边界.md) |
+| X-DEP-BUMP-CONSUMERS | 消费方依赖抬升（kit v0.5.0 / pgx v5.11.0 / go 1.26.11）+ govulncheck 门 | 2026-11-12 | 见本条 | [施工记录](#X-DEP-BUMP-CONSUMERS) |
+| X-AGENTS-DEPENDENCY-TABLE | `AGENTS.md` §4 依赖表按实际 `go.mod` 订正 | 2026-11-12 | 见本条 | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
+| X-CI-RACE-STATICCHECK | CI 补 `-race` 与 `staticcheck`（含 1 条存量告警清理） | 2026-11-12 | 见本条 | [施工记录](#X-CI-RACE-STATICCHECK) |
 
 ---
 
@@ -640,3 +643,32 @@
 > - **补记（2026-11-12 第二轮，三态补全）**：统一栈 `--profile full` 真跑发现上一条 fail-closed 修正把容器形态也锁死了——无 `JWT_SECRET`、`AUTH_INSECURE_EXPOSURE=loopback-published`、绑定 `0.0.0.0:8090` 时 `POST /api/strategies` 恒 503 `auth_unavailable`，ai-service 的 copilot 登记链不可用。按用户要求补第 3 态，与 risk / analytics 等同口径：无 secret + **显式** `AUTH_INSECURE_EXPOSURE=loopback-published` ⇒ 任何绑定都放开写面（`NewOpenAccessAuthorizer` 只在启动闸放行且逐字声明时装配），启动 WARN 用**实际绑定地址**点名写面无鉴权、非回环追加「已对外暴露」；无 secret + 回环 + 未声明仍是 503；非回环 + 未声明仍拒启。上一轮的 `TestNoJWTSecretRejectsProtectedRoutes` 扩为三态表 `TestNoSecretAuthPostures`（state 1 的 503 断言原样保留，未删 / 未放宽），新增 `cmd/assetservice/main_test.go` 的 `TestStartupGateThreeStates` / `TestOpenAccessNonLoopbackCreateReachesBusiness`。破坏验证：把 `openAccessAuthorizer.Authorize` 改回 `errAuthUnavailable` ⇒ state 3 红（实测 `503, want 201`），逐字节还原后复绿。**重开条件（更新）**：本单「本地必须带 token」的口径不再无条件成立——第 3 态下无 token 也能写；若今后要收紧为「无 token 一律拒」，须先确认统一栈不再声明 `AUTH_INSECURE_EXPOSURE`，再另立单走重开流程。`docs/TASKS.md` 的 `STRAT-COMPOSE-AUTH-INJECT` 必要性随之改为**条件性**：只有统一栈注入 `JWT_SECRET` 时才需要 token 注入。
 
 
+
+<a id="X-DEP-BUMP-CONSUMERS"></a>
+### X-DEP-BUMP-CONSUMERS · 消费方依赖抬升（本仓部分，跨仓伞 `tellurion:X-DEP-BUMP-CONSUMERS`）
+
+> **施工记录（2026-11-12）**：
+> - **变更**：kit `v0.2.0 → v0.5.0`；`go` directive `1.25.0 → 1.26.11`；MVS 连带 pgx `v5.7.3 → v5.11.0`、`x/crypto v0.57.0`、`x/net v0.60.0`、`x/sync v0.23.0`、`x/sys v0.48.0`、`x/text v0.42.0`；contracts 保持 `v0.10.0` 不动。
+> - **CI**：`go-version` 改 `1.26.11`；`Vet` 之后新增 `Govulncheck` 步。
+> - **验收（真实输出）**：`govulncheck ./...` → `No vulnerabilities found` / `Your code is affected by 0 vulnerabilities`，EXIT=0；`gofmt -l .` 空；`go build/vet/test ./... -count=1` 全 EXIT=0（7 包 `ok`）。
+> - **破坏验证（真做真还原）**：`go get kit@v0.2.0 pgx@v5.7.3` + `go mod tidy` ⇒ `govulncheck` 报 `pgx/v5@v5.7.3` 可达漏洞（trace `internal/asset/pgstore.go:373` → `sanitize.SanitizeSQL`）、`Your code is affected by 1 vulnerability`，EXIT=1；从目标态备份（`%TEMP%\strategy_target_20261112`）逐字节还原，`go.mod` SHA256 `C0A48C1EF1CF10322FEC5DC56B5389DA403A54C51E54732D8DBA595ACEE1EF35`、`go.sum` `64BF59625C9CD8D82DB74A9B13ED2A45BAB63A2FE6A3C6EAF4E25270D2A963F0`，与破坏前一致，复跑 EXIT=0。
+> - **边界**：只动本仓 `go.mod`/`go.sum`/CI/文档；未触碰当时未推送的 `7521613`。
+
+<a id="X-AGENTS-DEPENDENCY-TABLE"></a>
+### X-AGENTS-DEPENDENCY-TABLE · `AGENTS.md` §4 依赖表按实际 `go.mod` 订正（跨仓伞 `tellurion:X-AGENTS-DEPENDENCY-TABLE`）
+
+> **施工记录（2026-11-12）**：
+> - **订正前**：§4 写 contracts `v0.9.0`、kit `v0.2.0`、pgx `v5.7.3`；实际 `go.mod` contracts 早已是 `v0.10.0`。
+> - **订正后**：contracts → `v0.10.0`（注明按实际 `go.mod` 订正）、kit → `v0.5.0`、pgx → `v5.11.0`（MVS 抬升，消除可达漏洞）；§1 里「现 pin `v0.2.0`」的叙述同步改为 `v0.5.0` 并指向 §4。
+> - **验收**：逐行与 `go.mod` 对读一致；`go build/vet/test` 全绿。
+> - **边界**：只改 §1 一处版本叙述与 §4 表格。
+
+<a id="X-CI-RACE-STATICCHECK"></a>
+### X-CI-RACE-STATICCHECK · CI 补 `-race` 与 `staticcheck`（本仓部分，跨仓伞 `tellurion:X-CI-RACE-STATICCHECK`）
+
+> **施工记录（2026-11-12）**：
+> - **改了什么**：`.github/workflows/ci.yml` 在 `Test` 之后新增 `Test（-race）` 与 `Staticcheck`（`honnef.co/go/tools/cmd/staticcheck@v0.8.2`）两步；`govulncheck` 门在同批落地。
+> - **补门前分诊（存量 1 条，未加 `staticcheck.conf` 基线排除）**：`internal/compilerjob/compilerjob_test.go` U1000 —— `fixture.register` 字段从未被赋值或读取（测试替身死字段），删除；同文件其余字段均在使用。
+> - **验收（真实输出）**：`gofmt -l .` 空；`go build/vet ./...` EXIT=0；`staticcheck ./...` EXIT=0；`go test ./... -count=1` 7 包全 `ok`。
+> - **`-race` 本地覆盖（Docker 容器，非仅 CI）**：`docker run --rm -v <repo>:/tellurion-strategy -w /tellurion-strategy golang:1.26 sh -c "go test -race ./... -count=1"` → 7 包全 `ok`、EXIT=0。
+> - **边界**：只动本仓 CI 与一条测试死字段；contracts / ui 的门由各自伞腿承担。

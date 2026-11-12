@@ -87,11 +87,10 @@ func (f *fakeRunner) Compile(ctx context.Context, req asset.CompileRequest) (ass
 
 // fixture 装配一整套真 HTTP 服务（asset.Service + httpapi）与一个已备好源码的定义。
 type fixture struct {
-	srv      *httptest.Server
-	svc      *asset.Service
-	id       string
-	version  string
-	register string
+	srv     *httptest.Server
+	svc     *asset.Service
+	id      string
+	version string
 }
 
 func newFixture(t *testing.T) *fixture {
