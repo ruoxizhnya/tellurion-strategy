@@ -25,6 +25,7 @@
 | X-AGENTS-DEPENDENCY-TABLE | `AGENTS.md` §4 依赖表按实际 `go.mod` 订正 | 2026-11-12 | 见本条 | [施工记录](#X-AGENTS-DEPENDENCY-TABLE) |
 | X-CI-RACE-STATICCHECK | CI 补 `-race` 与 `staticcheck`（含 1 条存量告警清理） | 2026-11-12 | 见本条 | [施工记录](#X-CI-RACE-STATICCHECK) |
 | X-LOW-CLEANUP（strategy 腿） | Dockerfile 里的退役服务名 `strategy-service` 改为 `assetservice` | 2026-11-12 | 见本条 | [施工记录](#X-LOW-CLEANUP-strategy) |
+| STRAT-COMPOSE-AUTH-INJECT | 统一栈 ai-service 段补资产登记地址与 service token | 2026-11-12 | core `0892bbc` | [原文](#STRAT-COMPOSE-AUTH-INJECT) |
 
 ---
 
@@ -685,3 +686,24 @@
 > - **改了什么**：`Dockerfile` 里三处产物名 `strategy-service → assetservice`（构建产物 / COPY / ENTRYPOINT）。容器内路径随之变为 `/app/assetservice`；`deploy/compose.yaml` 只用 `build:`，不引用二进制名，无需联动。`Dockerfile.compiler` 的 `compiler` 是真实在用的批处理进程，**不改**。
 > - **验收（真实执行）**：`docker build -f Dockerfile -t tellurion-strategy:xlc-check .` 成功；`docker run --rm --entrypoint /app/assetservice <img> --help` 正常打印 flag 列表（`-addr` 默认 `127.0.0.1:8090`），证明入口名与新产物名一致。
 > - **边界**：只改本仓 `Dockerfile` 三行；不动 compose、不动 `cmd/assetservice` 源码、不动历史归档原文。
+
+<a id="STRAT-COMPOSE-AUTH-INJECT"></a>
+### STRAT-COMPOSE-AUTH-INJECT · 统一栈 ai-service 段补资产登记地址与 service token（等 core compose 批次）[P2] ✅（2026-11-12）
+
+> **状态说明**：⏸ 挂起——**等 core compose 批次一起落**（`tellurion/docker-compose.yml` 后面有 core 批次要改 compose 参数，两个执行者同时改会撞）。本单不可单独派发。**必要性已改为条件性（2026-11-12 第二轮三态补全后）**：统一栈默认无 `JWT_SECRET` 且 strategy 段声明 `AUTH_INSECURE_EXPOSURE=loopback-published`，命中第 3 态——写面无鉴权但可用，agent 登记链在注入前**不会** 401（此前「注入前会 401」的口径已作废）。只有当统一栈改为注入 `JWT_SECRET`（生产姿态）时，写面才回到全闸，本单的 `STRATEGY_ASSET_TOKEN` 注入才成为必需；届时按本单 ③ 同批落。
+
+- **① 目标**：把 service token 与资产服务地址注入统一栈的 ai-service 段，让 agent 的 copilot 登记链在统一栈里真的能写策略资产；两段注入同批落地。
+- **② 上下文（2026-11-12 实测）**：`tellurion/docker-compose.yml:303-336` 的 ai-service 段注入了 `DATA_SERVICE_URL` / `AI_SERVICE_FACTOR_API_URL` / `JWT_SECRET` 等，但**既无 `STRATEGY_ASSET_URL` 也无 `STRATEGY_ASSET_TOKEN`**——agent 侧 `config/ai-service.yaml` 的默认值 `http://127.0.0.1:8090` 在容器内指向自己，登记链必然失败。strategy 段 `:472-477` 已有 `JWT_SECRET: ${JWT_SECRET:-}` 与 `AUTH_INSECURE_EXPOSURE`，**无需再补**（原协同单「strategy 段补 JWT_SECRET」已不成立，按实测订正）。agent 自证 `deploy/compose.yaml` 已注入 `STRATEGY_ASSET_URL` + `STRATEGY_ASSET_TOKEN`（`tellurion-agent@a59631e`）。
+- **③ 要求**：① ai-service 段补 `STRATEGY_ASSET_URL: ${STRATEGY_ASSET_URL:-http://host.docker.internal:8090}`（与 `STRATEGY_ASSET_RESOLVE_URL` 同口径，`:240`）与 `STRATEGY_ASSET_TOKEN: ${STRATEGY_ASSET_TOKEN:-}`；② token 与 strategy 段 `JWT_SECRET` **同源**：同一份 secret 签发/验签，compose 里不得出现第二个 secret；③ 注释写明「注入 `JWT_SECRET` 时空 token = 登记链 401，不是静默降级；无 secret + 第 3 态下则免 token」；④ 与 core compose 批次同批提交，避免与之冲突。
+- **④ 约束与非目标**：不改 strategy 段（JWT_SECRET 已就位）；不改端点 / 角色 / 请求体；不在 compose 里塞真 token（只留 `${VAR:-}` 占位）；不动 `tools/issue_service_token.go`。
+- **⑤ 验收**：`docker compose config -q` 通过；`docker compose --profile full config` 的 ai-service 段出现 `STRATEGY_ASSET_URL` / `STRATEGY_ASSET_TOKEN` 且 token 与 strategy 段 `JWT_SECRET` 同源；起栈后用 `tools/issue_service_token.go` 签发的 token 走一次 create → source（2xx），把 ai-service 段 token 清空后同一请求 401（真做真还原）。
+- **⑥ 边界**：`tellurion/docker-compose.yml` 的 ai-service 段（`:303-336`）；跨仓归属 core compose 批次执行者。
+- **owner**：待定（core compose 批次）
+
+> **施工记录（2026-11-12，core `0892bbc`；本仓只改台账，零代码改动）**
+>
+> - **前提复核**：core compose 的 ai-service 段确无这两个键（`docker-compose.yml` ai-service 段）；strategy 段 `JWT_SECRET: ${JWT_SECRET:-}` 与 `AUTH_INSECURE_EXPOSURE` 已就位，无需再补。agent 侧 `cmd/ai/lifecycle.go` 已 `BindEnv("strategy_asset.token", "STRATEGY_ASSET_TOKEN")`、`cmd/ai/asset_registrar.go` 空 token 时显式 warn。
+> - **core 改动**：ai-service 段补 `STRATEGY_ASSET_URL: ${STRATEGY_ASSET_URL:-http://host.docker.internal:8090}`（full 可覆盖 `http://strategy:8090`）与 `STRATEGY_ASSET_TOKEN: ${STRATEGY_ASSET_TOKEN:-}`；注释写明「注入 `JWT_SECRET` 时条件必需、空 token = 401 + 启动期 warn；无 secret 第 3 态照旧」。`tools/check_deploy_consistency.py` 的 `CROSS_REPO_ENV_READERS` 补两条（读取方 = agent `cmd/ai/lifecycle.go` + `cmd/ai/endpoints.go`），否则跨仓读取会被「每个 env 都有读取点」误报。
+> - **验收（真做）**：`docker compose config --quiet` / `--profile full config --quiet` 均 exit 0；渲染结果 `STRATEGY_ASSET_URL: http://host.docker.internal:8090`、`STRATEGY_ASSET_TOKEN: ""`；`check_deploy_consistency.py` / `check_doc_links.py` exit 0；`docker compose up -d ai-service` 真起后日志 `{"url":"http://host.docker.internal:8090","carrier":"dsl","token_configured":false,...}` + warn `strategy_asset.token is empty: asset-service writes will be rejected (401) ... set STRATEGY_ASSET_TOKEN` —— 读到变量、空 token 明确报错，不静默降权。
+> - **未做（如实）**：⑤ 的「带真 token create → source 2xx」未跑 —— 需 LLM copilot 生成与真资产载体；本轮验到注入 + fail-closed 语义为止。
+> - **收口**：原文与本节一并移入归档；本仓无代码改动。
