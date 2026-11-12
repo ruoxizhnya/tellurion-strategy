@@ -20,6 +20,10 @@ verified-by: 2026-11-12 写侧收紧落地——13 业务端点 = 5 条公开读
 > （`policy.go`，只认 `service` 角色）；promote 要求受信 `X-Actor` 并落 `strategy.strategy_promotions` 审计；
 > 新增公开 `/healthz` 与 `/readyz`；按身份令牌桶限流（50 rps / 突发 200）；版本列表支持 `limit` / `offset`；
 > build 幂等键落实现。错误码闭合表见 §2.1，逐端点版本与错误码见 §7。
+> **2026-11-12 三态补全**：启动闸改为三态——① 有 `JWT_SECRET` ⇒ 全闸；② 无 secret + 回环 + 未显式声明
+> ⇒ 受保护路由 503 `auth_unavailable`；③ 无 secret + 显式 `AUTH_INSECURE_EXPOSURE=loopback-published`
+> ⇒ **任何绑定都放开**写面，受保护路由走业务（启动 WARN 点名写面无鉴权 + 实际绑定地址，非回环追加
+> 「已对外暴露」）。无 secret + 非回环 + 未声明 ⇒ 拒绝启动。实测矩阵见 ADR-0005。
 > **非目标（不是欠账）**：`storage=url` 分支（只保留列、fail-closed）、`carrier=external` 的 hash 语义（不单独立文）、
 > core 侧 Mount 门（消费侧改造，归 `tellurion` 仓）。`docs/TASKS.md` 当前无开放项。
 > `version_hash` 的输入形状与域标签自 contracts `v0.5.0` 起收编（G5 ③，2026-10-24），现 pin `v0.9.0`：`PUT .../source` 的 wire 形状与 hash 值不变。
@@ -100,8 +104,12 @@ verified-by: 2026-11-12 写侧收紧落地——13 业务端点 = 5 条公开读
 - 其余 5 条**读端点**（`versions` / `promotions` / `builds/{job_id}` / `resolve` / `artifact`）保持公开，靠端口隔离
   （默认 `127.0.0.1:8090`，只在集群内/回环）。读面不带写入能力，加闸只会让 core / UI 的读链路无故要 token；
   这条豁免**不覆盖写**——5 条写端点已于 2026-11-12 并入上表（`TestReadRoutesRemainPublic` 钉住读侧仍公开）。
-  启动闸（kit `DecideStartup`）：无 `JWT_SECRET` 且绑定非回环、又未声明 `AUTH_INSECURE_EXPOSURE=loopback-published`
-  ⇒ **拒绝启动**，不会出现「漏配 secret 就全开」的进程。
+- **启动闸三态**（kit `DecideStartup`，2026-11-12 与 risk / analytics 等同口径）：
+  ① 有 `JWT_SECRET` ⇒ 全闸；② 无 secret + 回环 + 未显式声明 ⇒ 进程可起，但受保护路由 503 `auth_unavailable`
+  （回环豁免只免启动拒绝，不免写端点鉴权）；③ 无 secret + **显式** `AUTH_INSECURE_EXPOSURE=loopback-published`
+  ⇒ **任何绑定都放开**，受保护路由走业务（`NewOpenAccessAuthorizer` 只在此时装配）。无 secret + 非回环 +
+  未声明（含拼错）⇒ **拒绝启动**。三态下 5 条读端点都公开；放开态下 5 条资产写（create / source / build /
+  validate / deprecate）必须真的可用（state 3 用例要求 create 201 → source 200 → build 202）。
 - 限流：进程内按身份分桶（令牌桶 50 rps / 突发 200；未鉴权端点共用一个 `open-access` 桶）。
   超限 → 429 `rate_limited` + `Retry-After: 1`。**鉴权先于限流**：401 / 403 不会被 429 顶替。
 - promote 额外要求受信头 `X-Actor`（由 agent / 操作者**直连本仓**时携带；ADR-0004 裁决 A——core 不做 promote 代理）：缺失 → 400 `actor_required`，

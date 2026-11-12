@@ -54,15 +54,21 @@ $p = Start-Process -FilePath "$dir\assetservice.exe" -ArgumentList @(
 - `-compiler-bin` 为空 = 编译能力关闭，build 端点恒 503 `compile_unavailable`（fail-closed）。
 - `-compiler-process-timeout` 是 **cmd/compiler 子进程硬上界**，默认 `20m`、最大 `1h`；
   实际生效值 = min(批次预算, 该值)。批次预算 = `maxAttempts × (timeout + backoff) + 1min`。
-- 无 `-jwt-secret` 时进程可在回环地址启动，但**受保护路由一律 503 `auth_unavailable`**
-  （启动豁免只免「启动拒绝」，不免写端点鉴权）；非回环绑定会被启动闸直接拒绝。生产必须给
-  `JWT_SECRET` / `AUTH_JWT_SECRET` 或显式 `-insecure-exposure`。
+- 鉴权启动闸是**三态**（kit `DecideStartup`，与 risk / analytics 等同口径）：
+  1. 有 `JWT_SECRET` ⇒ 全闸；
+  2. 无 secret + 回环 + 未声明 ⇒ 进程可起，但**受保护路由一律 503 `auth_unavailable`**
+     （回环豁免只免「启动拒绝」，不免写端点鉴权）；
+  3. 无 secret + **显式** `AUTH_INSECURE_EXPOSURE=loopback-published` ⇒ **任何绑定都放开**，
+     受保护路由走业务；启动 WARN 点名「受保护/写面无鉴权」与**实际绑定地址**，非回环再追加
+     「已对外暴露」。
+  无 secret + 非回环 + 未声明（含拼错）⇒ **拒绝启动**。生产必须给 `JWT_SECRET` /
+  `AUTH_JWT_SECRET`；只有在明确接受写面无鉴权时才声明第 3 态。
 - **写端点从 2026-11-12 起要 service token**：5 条资产写（create / source / build / validate / deprecate）
   与 `/promote`、2 条 `/internal/*` 全部只认 `role=service`（`internal/httpapi/policy.go`）。
-  回环豁免**只免除启动拒绝**，不会让受保护路由放行：没配 secret 时受保护路由 503 `auth_unavailable`，
-  配了 secret 但请求不带 token 时 401 `unauthenticated`——**没有「没配 secret 就放行」的后门**
-  （四种启动姿态的实测状态码见 ADR-0005「实测矩阵」）。
-  本地直跑要给写链路放行，按三步配（secret 只走 env，不进 argv）：
+  没配 secret 且未声明第 3 态时受保护路由 503 `auth_unavailable`；配了 secret 但请求不带 token 时
+  401 `unauthenticated`。第 3 态（显式 `loopback-published`）是唯一免 token 的可写档。
+  本地直跑要给写链路放行，二选一：注入 `JWT_SECRET` + service token（推荐），或显式声明第 3 态。
+  实测状态码见 ADR-0005「实测矩阵」。带 token 的三步配法（secret 只走 env，不进 argv）：
 
   ```powershell
   # 1) core 仓签发：stdout 只有 token；sub 必须是 service:<repo>
@@ -299,8 +305,9 @@ curl.exe -s -X POST "http://127.0.0.1:18090/internal/strategies/<strategy_id>/bu
   --data-binary "@$dir\close.json"
 ```
 
-- 无 `JWT_SECRET` 的回环部署**不再**能省 `Authorization`：内部面自 2026-11-12 起只认 service token
-  （无 secret 时 503 `auth_unavailable`，见 §1.2）。生产与本地都必须带 service token。
+- 无 `JWT_SECRET` 的回环部署（第 1 态）**不能**省 `Authorization`：内部面自 2026-11-12 起只认 service token
+  （无 secret 时 503 `auth_unavailable`，见 §1.2）。只有显式声明第 3 态
+  （`AUTH_INSECURE_EXPOSURE=loopback-published`）时才免 token；生产必须带 service token。
 - 归因码建议：进程挂死用 `compile_failed`（若确认是超时上界触发但回写丢失，可人工记
   `compile_timeout`；两者都是终态失败，区别只在报表口径）。
 - 404 `job_not_found`：job_id 或 strategy_id 不对（服务不跨策略枚举）。

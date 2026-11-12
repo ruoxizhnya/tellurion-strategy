@@ -70,13 +70,8 @@ func bearer(tok string) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + tok}
 }
 
-// 无 JWT_SECRET = 鉴权未配置：受保护路由必须 503 `auth_unavailable`，绝不
-// 放过任何写请求；读端点保持公开。
-//
-// 2026-11-12 实测矩阵第 1 格（无 secret + 回环）曾对 `POST /api/strategies`
-// 返回 **201**——回环豁免只该免「启动拒绝」，不该免写端点鉴权。这条用例把
-// 「无 secret 时写端点不得 2xx」钉死，删掉 `kitAuthorizer` 的拒绝分支即变红。
-func TestNoJWTSecretRejectsProtectedRoutes(t *testing.T) {
+func newNoSecretServer(t *testing.T, authorizer Authorizer) *httptest.Server {
+	t.Helper()
 	svc, err := asset.New(asset.Options{
 		Store:    asset.NewMemory(),
 		Compiler: &fakeCompiler{id: "tinygo-test", bytes: wasmWithImports("env.get_bar")},
@@ -86,28 +81,93 @@ func TestNoJWTSecretRejectsProtectedRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("asset.New: %v", err)
 	}
-	api, err := New(svc, WithAuthorizer(NewAuthorizer(auth.NewTokenService(auth.Config{}))))
+	api, err := New(svc, WithAuthorizer(authorizer))
 	if err != nil {
 		t.Fatalf("httpapi.New: %v", err)
 	}
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
+	return srv
+}
 
-	for _, tc := range writeRoutes() {
-		wantErrorCode(t, call(t, srv, tc.method, tc.path, nil, nil),
-			http.StatusServiceUnavailable, "auth_unavailable")
-	}
-	for _, path := range []string{
-		"/internal/strategies/st_x/artifacts",
-		"/internal/strategies/st_x/builds/job-1",
-	} {
-		wantErrorCode(t, call(t, srv, http.MethodPost, path, nil, nil),
-			http.StatusServiceUnavailable, "auth_unavailable")
-	}
+// 无 secret 的鉴权姿态是**三态**表，不是二态；读端点始终公开：
+//
+//  1. 无 secret + 未显式声明（本用例）⇒ 受保护路由一律 503 `auth_unavailable`；
+//  2. 无 secret + 非回环 + 未声明 ⇒ 启动闸拒绝（用例在 cmd/assetservice）；
+//  3. 无 secret + 显式 `AUTH_INSECURE_EXPOSURE=loopback-published` ⇒ 开放闸，
+//     受保护路由走业务（本用例第 2 条 subtest）。
+//
+// 2026-11-12 实测矩阵第 1 格曾对 `POST /api/strategies` 返回 **201**——那是把
+// 回环豁免误当鉴权豁免。放开必须靠显式声明，不能靠绑定地址猜；删掉
+// `kitAuthorizer` 的拒绝分支，state 1 即变红。
+func TestNoSecretAuthPostures(t *testing.T) {
+	t.Run("state 1: no secret, not declared -> 503", func(t *testing.T) {
+		srv := newNoSecretServer(t, NewAuthorizer(auth.NewTokenService(auth.Config{})))
 
-	// 读端点不受影响：请求进到 handler，返回业务错误而不是 401/403/503。
-	wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/st_nope/versions", nil, nil),
-		http.StatusNotFound, "strategy_not_found")
+		for _, tc := range writeRoutes() {
+			wantErrorCode(t, call(t, srv, tc.method, tc.path, nil, nil),
+				http.StatusServiceUnavailable, "auth_unavailable")
+		}
+		for _, path := range []string{
+			"/internal/strategies/st_x/artifacts",
+			"/internal/strategies/st_x/builds/job-1",
+		} {
+			wantErrorCode(t, call(t, srv, http.MethodPost, path, nil, nil),
+				http.StatusServiceUnavailable, "auth_unavailable")
+		}
+
+		// 读端点不受影响：请求进到 handler，返回业务错误而不是 401/403/503。
+		wantErrorCode(t, call(t, srv, http.MethodGet, "/api/strategies/st_nope/versions", nil, nil),
+			http.StatusNotFound, "strategy_not_found")
+	})
+
+	t.Run("state 3: explicit loopback-published -> business", func(t *testing.T) {
+		srv := newNoSecretServer(t, NewOpenAccessAuthorizer())
+
+		// 放开态下 5 条资产写必须真的能用（create 201 → source 200 → build 202），
+		// 不是只放行一部分。
+		create := call(t, srv, http.MethodPost, "/api/strategies", map[string]any{
+			"carrier":     "wasm",
+			"abi_version": "on_bar/2",
+			"scope":       "market",
+			"entry":       "OnBar",
+		}, nil)
+		wantStatus(t, create, http.StatusCreated)
+		id, _ := decodeObject(t, create.Body)["id"].(string)
+		if id == "" {
+			t.Fatalf("create returned no id: %s", create.Body)
+		}
+
+		source := call(t, srv, http.MethodPut, "/api/strategies/"+id+"/source",
+			map[string]string{"source": "package strategy"}, nil)
+		wantStatus(t, source, http.StatusOK)
+		version, _ := decodeObject(t, source.Body)["version_hash"].(string)
+		if version == "" {
+			t.Fatalf("source returned no version_hash: %s", source.Body)
+		}
+
+		build := call(t, srv, http.MethodPost, "/api/strategies/"+id+"/build",
+			map[string]string{"version_hash": version}, nil)
+		wantStatus(t, build, http.StatusAccepted)
+
+		// 其余受保护路由也必须进业务层：可以是业务错误（400/404/409），
+		// 但不得是 401 `unauthenticated` / 403 `forbidden` / 503 `auth_unavailable`。
+		paths := []struct{ method, path string }{
+			{http.MethodPost, "/api/strategies/" + id + "/versions/" + version + "/validate"},
+			{http.MethodPost, "/api/strategies/" + id + "/versions/" + version + "/deprecate"},
+			{http.MethodPost, "/api/strategies/" + id + "/versions/" + version + "/promote"},
+			{http.MethodPost, "/internal/strategies/" + id + "/artifacts"},
+			{http.MethodPost, "/internal/strategies/" + id + "/builds/job-1"},
+		}
+		for _, tc := range paths {
+			resp := call(t, srv, tc.method, tc.path, nil, nil)
+			switch resp.Status {
+			case http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable:
+				t.Fatalf("%s %s hit the auth gate in open-access mode: %d (body: %s)",
+					tc.method, tc.path, resp.Status, resp.Body)
+			}
+		}
+	})
 }
 
 // ─── 策略表与档位 ──────────────────────────────────────────────

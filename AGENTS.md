@@ -20,8 +20,11 @@ create / source / build / validate / deprecate 已收紧，加 `/promote` + 2 �
 审计；新增公开 `/healthz` / `/readyz`；按身份令牌桶限流（探针豁免，鉴权先于限流）；版本列表分页；
 build 幂等键（同 `(strategy, version, toolchain)` 未终态作业复用 `job_id`）。
 **STRAT-WRITE-AUTH-ROLLOUT（2026-11-12）**：5 条资产写端点并入 `servedPolicy`（只认 `service`），跨仓两步走——
-agent 侧带 token 能力先发布（`tellurion-agent@a59631e`），本仓随后收紧；本地直跑必须由 core `tools/issue_service_token.go`
-签发 token 并注入 `JWT_SECRET` + `STRATEGY_ASSET_TOKEN`（见 `docs/runbook.md`）。
+agent 侧带 token 能力先发布（`tellurion-agent@a59631e`），本仓随后收紧。鉴权启动闸为**三态**：有 secret ⇒ 全闸；
+无 secret + 回环 + 未声明 ⇒ 受保护路由 503 `auth_unavailable`；无 secret + 显式
+`AUTH_INSECURE_EXPOSURE=loopback-published` ⇒ **任何绑定都放开**写面（启动 WARN 点名写面无鉴权 + 实际绑定地址，
+非回环追加「已对外暴露」）；非回环 + 未声明 ⇒ 拒绝启动。带 token 的本地跑法与三态实测矩阵见 `docs/runbook.md`
+与 ADR-0005。
 **SVC-STRAT-G4（2026-11-07 落地，✅ 2026-11-10）**：编译链路七类失败语义成文（`docs/api-schema.md` §2.2）、重试边界（§3.1）、
 运维手册 `docs/runbook.md`；`cmd/compiler` 子进程加显式硬上界 `-compiler-process-timeout`（默认 20m、最大 1h，
 走 `exec.CommandContext`），到点落 `failed + error_code=compile_timeout`，不留 `running`。

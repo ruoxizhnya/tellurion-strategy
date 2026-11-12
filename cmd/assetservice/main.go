@@ -74,22 +74,23 @@ func run() error {
 	flag.Var(&compilerEnv, "compiler-env", "environment variable passed through to the external toolchain (repeatable)")
 
 	// 鉴权（SVC-STRAT-G1 + STRAT-WRITE-AUTH-ROLLOUT）：八条写端点受保护。
-	// 无 secret 时进程可在回环/显式声明下启动，但受保护路由一律 503
-	// auth_unavailable——回环豁免只免「启动拒绝」，不免写端点鉴权。
+	// 三态口径（与 risk / analytics 等服务同口径）：
+	//   1. 有 secret ⇒ 全闸；
+	//   2. 无 secret + 未显式声明 + 回环 ⇒ 进程可起，受保护路由 503；
+	//   3. 无 secret + 显式 AUTH_INSECURE_EXPOSURE=loopback-published ⇒ 任何绑定
+	//      都放开，受保护路由走业务（启动 WARN 点名写面无鉴权与实际绑定地址）。
+	// 无 secret + 非回环 + 未声明 ⇒ 拒绝启动。
 	jwtSecret := flag.String("jwt-secret", envFirst("JWT_SECRET", "AUTH_JWT_SECRET"),
 		"JWT secret shared with core (empty = protected endpoints answer 503 auth_unavailable)")
 	exposure := flag.String("insecure-exposure", os.Getenv("AUTH_INSECURE_EXPOSURE"),
-		"explicit exposure declaration for open access on a non-loopback bind (only loopback-published is accepted)")
+		"explicit exposure declaration that opens protected (write) endpoints without a secret on any bind (only loopback-published is accepted)")
 	flag.Parse()
 
 	startup := kithttp.DecideStartup(*jwtSecret, true, bindHost(*addr), *exposure)
 	if startup.Refuse {
 		return errors.New(startup.Reason)
 	}
-	if startup.Insecure {
-		slog.Warn("authentication is not configured: all protected (write) endpoints answer 503 auth_unavailable; bind address must be loopback or loopback-published",
-			"addr", *addr)
-	}
+	openAccess := openAccessEnabled(startup, *exposure)
 	tokens := auth.NewTokenService(auth.Config{JWTSecret: startup.Secret})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -167,8 +168,14 @@ func run() error {
 		return fmt.Errorf("register builtins: %w", err)
 	}
 	slog.Info("builtin strategies registered", "count", registered)
+	// 三态装配：第 3 态（显式 loopback-published）用开放闸；第 1/2 态都走 kit
+	// 闸（有 secret ⇒ 全闸；无 secret ⇒ 受保护路由 503、读端点公开）。
+	authorizer := httpapi.NewAuthorizer(tokens)
+	if openAccess {
+		authorizer = httpapi.NewOpenAccessAuthorizer()
+	}
 	api, err := httpapi.New(svc,
-		httpapi.WithAuthorizer(httpapi.NewAuthorizer(tokens)),
+		httpapi.WithAuthorizer(authorizer),
 		httpapi.WithReadiness(readiness),
 		httpapi.WithPromotionLog(promotionLog),
 	)
@@ -184,6 +191,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// WARN 必须在监听成功后用**实际绑定地址**打印：容器里 `-addr 0.0.0.0:8090`
+	// 才是真实暴露面，配置串可能被端口 0 / 别名掩盖。
+	logAuthPosture(ln.Addr().String(), openAccess, startup.Insecure)
 	logMode := "disabled"
 	if compiler != nil {
 		logMode = "external (cmd/compiler)"
@@ -242,6 +252,35 @@ func bindHost(addr string) string {
 		return addr
 	}
 	return host
+}
+
+// isLoopbackBind 判断监听地址是否只在本机（空主机 = 0.0.0.0，按非回环处理）。
+func isLoopbackBind(addr string) bool {
+	return kithttp.IsLoopbackHost(bindHost(addr))
+}
+
+// openAccessEnabled 只在启动闸已允许「无 secret 启动」、且逐字声明了
+// `AUTH_INSECURE_EXPOSURE=loopback-published` 时返回 true（第 3 态）。逐字匹配，
+// 不做大小写/别名宽容：拼错就是没声明，宁可 503 也不猜运维意图。
+func openAccessEnabled(startup kithttp.Startup, exposure string) bool {
+	return startup.Insecure && strings.TrimSpace(exposure) == kithttp.InsecureExposureLoopbackPublished
+}
+
+// logAuthPosture 用实际绑定地址报告无鉴权启动的姿态（只在 startup.Insecure 时调用）：
+//   - 第 3 态：显式声明 ⇒ 受保护/写面无鉴权；非回环再加「已对外暴露」；
+//   - 第 2 态：未声明 ⇒ 受保护路由 503（非回环已被启动闸拒绝，走到这里必是回环）。
+func logAuthPosture(addr string, openAccess, insecure bool) {
+	switch {
+	case openAccess && isLoopbackBind(addr):
+		slog.Warn("authentication is not configured: all protected (write) endpoints accept unauthenticated requests (open access declared via AUTH_INSECURE_EXPOSURE="+kithttp.InsecureExposureLoopbackPublished+"); bind address is loopback-only",
+			"addr", addr)
+	case openAccess:
+		slog.Warn("authentication is not configured: all protected (write) endpoints accept unauthenticated requests (open access declared via AUTH_INSECURE_EXPOSURE="+kithttp.InsecureExposureLoopbackPublished+"); bind address is not loopback: exposed beyond this host",
+			"addr", addr)
+	case insecure:
+		slog.Warn("authentication is not configured: all protected (write) endpoints answer 503 auth_unavailable; bind address must be loopback or loopback-published",
+			"addr", addr)
+	}
 }
 
 // envFirst 按顺序取第一个非空环境变量（core 历史用法 JWT_SECRET、配置口径 AUTH_JWT_SECRET）。

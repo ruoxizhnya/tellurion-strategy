@@ -19,9 +19,13 @@ var (
 
 // Authorizer 是受保护路由的鉴权闸（policy.go 的八条写端点）。
 //
-// 放行时返回调用方身份（限流键）；`kitAuthorizer` 在开放访问（无 secret）
-// 时**不放行**，返回 errAuthUnavailable ⇒ 503。身份只用于限流分桶，不参与
-// 鉴权判定——鉴权结论仍由 Authorize 的 error 表达。
+// 放行时返回调用方身份（限流键）；`kitAuthorizer` 在无 secret 且未显式声明
+// 开放访问时**不放行**，返回 errAuthUnavailable ⇒ 503。身份只用于限流分桶，
+// 不参与鉴权判定——鉴权结论仍由 Authorize 的 error 表达。
+//
+// 三种姿态：有 secret ⇒ kit 验签；无 secret + 未声明 ⇒ 503；无 secret + 显式
+// 声明 `AUTH_INSECURE_EXPOSURE=loopback-published` ⇒ `NewOpenAccessAuthorizer`，
+// 受保护路由走业务（只由 cmd/assetservice 在启动闸放行后装配）。
 type Authorizer interface {
 	Authorize(r *http.Request) (principal string, err error)
 }
@@ -38,16 +42,31 @@ func NewAuthorizer(svc *auth.TokenService) Authorizer {
 	return kitAuthorizer{svc: svc}
 }
 
+// NewOpenAccessAuthorizer 返回第 3 态（无 secret + 显式声明
+// `AUTH_INSECURE_EXPOSURE=loopback-published`）的开放闸：受保护路由不带 token
+// 也直接进入业务层。**只由 cmd/assetservice 在启动闸已放行、且逐字声明
+// loopback-published 时装配**；第 1/2 态必须继续用 NewAuthorizer（无 secret ⇒ 503），
+// 否则等于把「漏配 secret」重新变成放行后门。
+func NewOpenAccessAuthorizer() Authorizer {
+	return openAccessAuthorizer{}
+}
+
+type openAccessAuthorizer struct{}
+
+func (openAccessAuthorizer) Authorize(*http.Request) (string, error) {
+	return "", nil
+}
+
 type kitAuthorizer struct {
 	svc *auth.TokenService
 }
 
 func (a kitAuthorizer) Authorize(r *http.Request) (string, error) {
 	if a.svc == nil || !a.svc.Enabled() {
-		// 无 secret = 鉴权未配置。受保护路由一律 503，**不是**就地放行：
-		// 启动闸的回环豁免只免「启动拒绝」，不免写端点鉴权。2026-11-12 实测
-		// 矩阵证明按旧语义「就地放行」时，回环上 `POST /api/strategies` 返回
-		// 201——闸门形同虚设。
+		// 无 secret = 鉴权未配置。回环绑定的豁免只免「启动拒绝」，不免写端点
+		// 鉴权：这一档一律 503，**不是**就地放行。要让无 secret 的写面可用，
+		// 必须走显式声明（`AUTH_INSECURE_EXPOSURE=loopback-published`）装配
+		// `NewOpenAccessAuthorizer`——两种意图分开表达，不靠绑定地址猜。
 		return "", fmt.Errorf("%w: JWT secret is not configured", errAuthUnavailable)
 	}
 	key := kithttp.RouteKey(r)

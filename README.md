@@ -36,8 +36,9 @@ go test ./...
 
 ```bash
 # 资产服务（本机直跑；默认 127.0.0.1:8090）
-# JWT_SECRET 与 core 共享：/promote 与两条 /internal/* 要 service token（G1）。
-# 不设 secret 时只在回环（或声明 AUTH_INSECURE_EXPOSURE=loopback-published）可起。
+# JWT_SECRET 与 core 共享：8 条写端点要 service token（G1 + 2026-11-12 收紧）。
+# 无 secret + 回环 = 可起但受保护路由 503；只有显式 AUTH_INSECURE_EXPOSURE=loopback-published
+# 才放开写面（任何绑定，启动 WARN 点名写面无鉴权 + 实际绑定地址）；非回环 + 未声明拒启。
 STRATEGY_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/tellurion?sslmode=disable' \
 JWT_SECRET='<shared-secret>' \
   go run ./cmd/assetservice
