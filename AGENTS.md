@@ -49,6 +49,7 @@ go test ./...
   - PG：`STRATEGY_TEST_DSN='postgres://postgres:postgres@127.0.0.1:5432/tellurion_strategy_test?sslmode=disable' go test ./internal/asset -count=1`
   - 真工具链：`STRATEGY_TINYGO_IMAGE=tinygo/tinygo:0.34.0 go test ./internal/compile -run TestCompile_RealTinyGoImage -v`
     （证据与复现步骤见 `docs/evidence/QT-41b-tinygo-0.34.0.md`）
+- CI（`.github/workflows/ci.yml`，单 job `go`）：`gofmt` → `go build` → `go vet` → `govulncheck@latest ./...`（依赖漏洞门，X-DEP-BUMP-CONSUMERS）→ `go test ./... -count=1` → `go test -race ./... -count=1`（竞态门，X-CI-RACE-STATICCHECK）→ `staticcheck@v0.8.2 ./...`（`go run`，版本已钉）。
 
 ## 3. 边界（硬约束）
 
