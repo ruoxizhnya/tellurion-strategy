@@ -1,10 +1,48 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+// F6 回归：进程启动后（RegisterBuiltins 出厂种子）内置策略必须可直接按 id
+// resolve，而不是 404 no_active_version。这是 W4.5 判 BLOCKED 的那条链路。
+func TestBuiltinResolveIsAvailableAfterFactorySeed(t *testing.T) {
+	srv, svc := newServer(t, nil)
+	seeded, err := svc.RegisterBuiltins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded != 14 {
+		t.Fatalf("factory seed = %d, want 14", seeded)
+	}
+
+	resolved := call(t, srv, http.MethodGet, "/api/strategies/momentum/resolve?ref=latest", nil, nil)
+	wantStatus(t, resolved, http.StatusOK)
+	got := decodeObject(t, resolved.Body)
+	for key, want := range map[string]any{
+		"artifact_hash": "",
+		"carrier":       "builtin",
+		"entry":         "momentum",
+		"status":        "promoted",
+	} {
+		if got[key] != want {
+			t.Fatalf("resolve[%s] = %v, want %v (body: %s)", key, got[key], want, resolved.Body)
+		}
+	}
+	if vh, _ := got["version_hash"].(string); vh == "" {
+		t.Fatalf("resolve returned no version_hash: %s", resolved.Body)
+	}
+
+	// 版本列表不再是空数组：出厂版本必须可见（F6 现场是 200 []）。
+	versions := call(t, srv, http.MethodGet, "/api/strategies/momentum/versions", nil, nil)
+	wantStatus(t, versions, http.StatusOK)
+	if strings.TrimSpace(string(versions.Body)) == "[]" {
+		t.Fatalf("versions still empty after factory seed: %s", versions.Body)
+	}
+}
 
 // builtin 的完整生命周期（ADR-0006）：建 → 写源 → validate → promote →
 // resolve latest 全链通过，且 artifact_hash 为空但 carrier=builtin 明确。

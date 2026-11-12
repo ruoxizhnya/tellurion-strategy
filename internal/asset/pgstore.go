@@ -151,6 +151,90 @@ func (p *PG) SetActive(ctx context.Context, id, versionHash, artifactHash string
 	return nil
 }
 
+// SeedBuiltin 在一个事务里完成出厂种子的三步写入：建定义 → 登记版本 → 置 active。
+//
+// 与 risk 仓 internal/rule/seed.go 同语义：已存在且有人动过（有 active 版本或
+// 有版本行）就跳过，绝不 update；并发实例同时 seed 时靠唯一键冲突收口成「跳过」。
+func (p *PG) SeedBuiltin(ctx context.Context, def Definition, version Version) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := validateBuiltinSeed(def, version); err != nil {
+		return false, err
+	}
+	capability, err := json.Marshal(def.Capability)
+	if err != nil {
+		return false, fmt.Errorf("%w: capability: %v", ErrInvalidDefinition, err)
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 已存在的定义：只有「同形状的 builtin 且从未有过版本与 active」的旧库形态才补齐。
+	var (
+		carrier    string
+		abiVersion string
+		scope      string
+		entry      string
+		activeV    *string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT carrier, abi_version, scope, entry, trim(active_version_hash)
+		  FROM strategy.strategy_definitions WHERE id = $1`, def.ID).
+		Scan(&carrier, &abiVersion, &scope, &entry, &activeV)
+	if err == nil {
+		if Carrier(carrier) != CarrierBuiltin || strategyScope(scope) != def.Scope ||
+			abiVersion != def.ABIVersion || entry != def.Entry || deref(activeV) != "" {
+			return false, nil
+		}
+		var hasVersion bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM strategy.strategy_versions WHERE strategy_id = $1)`,
+			def.ID).Scan(&hasVersion); err != nil {
+			return false, err
+		}
+		if hasVersion {
+			return false, nil
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	} else {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO strategy.strategy_definitions
+				(id, carrier, abi_version, scope, capability, entry,
+				 active_version_hash, active_artifact_hash, created_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,NULL,NULL,$7,$8)`,
+			def.ID, string(def.Carrier), def.ABIVersion, string(def.Scope), capability, def.Entry,
+			def.CreatedAt, def.UpdatedAt); err != nil {
+			if isUniqueViolation(err) {
+				return false, nil // 并发实例先插入；对方会在自己的事务里完成激活
+			}
+			return false, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO strategy.strategy_versions
+			(strategy_id, version_hash, source, carrier, abi_version, scope, entry, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		version.StrategyID, version.VersionHash, version.Source, string(version.Carrier),
+		version.ABIVersion, string(version.Scope), version.Entry, version.CreatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return false, nil // 并发实例已登记同一版本（内容寻址 ⇒ hash 相同）
+		}
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE strategy.strategy_definitions
+		   SET active_version_hash = $2, active_artifact_hash = NULL, updated_at = $3
+		 WHERE id = $1`, def.ID, version.VersionHash, def.UpdatedAt); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
 // SaveVersion 登记源码版本；同 hash 幂等（内容寻址）。
 func (p *PG) SaveVersion(ctx context.Context, v Version) (Version, error) {
 	if err := ctx.Err(); err != nil {

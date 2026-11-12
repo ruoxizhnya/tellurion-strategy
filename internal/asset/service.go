@@ -58,8 +58,9 @@ type DispatchRequest struct {
 // Options 是服务的装配面。
 type Options struct {
 	Store            Store
-	Compiler         Compiler // nil = build 端点 fail-closed（ErrCompileUnavailable）
-	Cache            *Cache   // nil = 直接回源（无 L1/L2、无 latest TTL）
+	Compiler         Compiler     // nil = build 端点 fail-closed（ErrCompileUnavailable）
+	Cache            *Cache       // nil = 直接回源（无 L1/L2、无 latest TTL）
+	PromotionLog     PromotionLog // nil = 出厂种子不写审计行（仅测试形态）
 	IDGen            func() string
 	Now              func() time.Time
 	MemoryLimitBytes int64
@@ -71,6 +72,7 @@ type Service struct {
 	store            Store
 	compiler         Compiler
 	cache            *Cache
+	promotionLog     PromotionLog
 	idGen            func() string
 	now              func() time.Time
 	memoryLimitBytes int64
@@ -86,6 +88,7 @@ func New(opts Options) (*Service, error) {
 		store:            opts.Store,
 		compiler:         opts.Compiler,
 		cache:            opts.Cache,
+		promotionLog:     opts.PromotionLog,
 		idGen:            opts.IDGen,
 		now:              opts.Now,
 		memoryLimitBytes: opts.MemoryLimitBytes,

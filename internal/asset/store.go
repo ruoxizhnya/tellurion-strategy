@@ -19,6 +19,16 @@ type Store interface {
 	GetDefinition(ctx context.Context, id string) (Definition, error)
 	SetActive(ctx context.Context, id, versionHash, artifactHash string) error
 
+	// SeedBuiltin 是内置策略的**出厂种子**：在一个事务（Memory 是一把锁）里
+	// 完成「建定义 → 登记版本 → 置 active_version_hash」，语义对齐 risk 仓
+	// internal/rule/seed.go 的 create+approve。
+	//
+	// 返回 seeded=false 表示该 id 已经有人动过（已有 active 版本，或已登记过
+	// 任何版本），此时**一个字节都不写**——绝不覆盖人工 promote / 人工写源。
+	// 只有「定义存在但从未有过版本与 active」这种出厂登记中断的旧库状态才会
+	// 被补齐，这正是 F6 的根因形态。
+	SeedBuiltin(ctx context.Context, def Definition, version Version) (seeded bool, err error)
+
 	SaveVersion(ctx context.Context, v Version) (Version, error)
 	GetVersion(ctx context.Context, id, versionHash string) (Version, error)
 	ListVersions(ctx context.Context, id string) ([]Version, error)
@@ -136,6 +146,44 @@ func (m *Memory) SetActive(ctx context.Context, id, versionHash, artifactHash st
 	s.def.ActiveArtifactHash = artifactHash
 	s.def.UpdatedAt = time.Now().UTC()
 	return nil
+}
+
+// SeedBuiltin 在一把锁内完成出厂种子的三步写入（对齐 PG 的单事务语义）。
+//
+// 已存在且有 active 版本、或已登记过任何版本 ⇒ 视为「有人动过」，跳过不写。
+func (m *Memory) SeedBuiltin(ctx context.Context, def Definition, version Version) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := validateBuiltinSeed(def, version); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.defs[def.ID]; ok {
+		if s.def.ActiveVersionHash != "" || len(s.versions) > 0 ||
+			s.def.Carrier != def.Carrier || s.def.Scope != def.Scope ||
+			s.def.ABIVersion != def.ABIVersion || s.def.Entry != def.Entry {
+			return false, nil // 有人动过，或同名不同形状（交给上层 fail-loud）
+		}
+		// 旧库形态：定义在、版本与 active 都没有（F6 根因）。补齐出厂状态。
+		cp := version
+		s.versions[version.VersionHash] = &cp
+		s.def.ActiveVersionHash = version.VersionHash
+		s.def.ActiveArtifactHash = ""
+		s.def.UpdatedAt = def.UpdatedAt
+		return true, nil
+	}
+	cp := def
+	cp.Capability = def.Capability.Clone()
+	cp.ActiveVersionHash = version.VersionHash
+	cp.ActiveArtifactHash = ""
+	m.defs[def.ID] = &memStrategy{
+		def:       cp,
+		versions:  map[string]*Version{version.VersionHash: &version},
+		artifacts: make(map[string]*Artifact),
+	}
+	return true, nil
 }
 
 // SaveVersion 登记源码版本；同 hash 幂等（内容寻址）。

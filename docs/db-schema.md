@@ -62,7 +62,7 @@ verified-by: 文档对齐审计——builtin 版本级激活（ADR-0006）追加
 | 启用/停用 | `is_active BOOLEAN`，删除=**软删**（`UPDATE ... SET is_active=FALSE`，行仍在） | **无删除**：定义行只增不删；「生效」由 `active_version_hash` / `active_artifact_hash` 表达；下线走 `deprecate`（版本级） | `tellurion:pkg/storage/strategies.go:106-116`；`internal/asset/ddl.go:34-38`；`internal/asset/service.go` 的 `Deprecate` | 语义不同（行消失 vs 版本下线）——**K5 的核心差异** |
 | 版本概念 | **无**：一条 `strategy_id` 一行，参数原地覆盖（`ON CONFLICT DO UPDATE`） | 版本链：`strategy_versions` 按 `(strategy_id, version_hash)` 多行；`active_version_hash` 指向当前 | `tellurion:pkg/storage/strategies.go:12-31`（已删）；`internal/asset/ddl.go:41-45` | 已收口（core 无版本概念且表已退役，无迁移对象） |
 | 内容寻址 | **无** `version_hash` / `artifact_hash` | `version_hash` = 源码 canonical sha256（域 + 六输入由 contracts 定义）；`artifact_hash` = 字节 sha256 | `internal/asset/hash.go`；`docs/api-schema.md` §2 | 本仓新增能力（core 无对应列） |
-| 内置策略 | `SeedStrategies` 播种 **3 条**（momentum / value / quality） | 启动登记 **14 条** `carrier=builtin`（无 artifact，`entry`=策略名） | `tellurion:pkg/storage/strategies.go`（已删）；`internal/asset/builtin.go` | 历史差异（3 vs 14）已随退役收口，见下 |
+| 内置策略 | `SeedStrategies` 播种 **3 条**（momentum / value / quality） | 启动出厂种子 **14 条**：定义 + 出厂版本 + `active_version_hash`（无 artifact，`entry`=策略名；ADR-0007） | `tellurion:pkg/storage/strategies.go`（已删）；`internal/asset/builtin.go` | 历史差异（3 vs 14）已随退役收口，见下 |
 | 写者（今天） | `SaveStrategyConfig`（upsert）/ `DeleteStrategyConfig`（软删）/ `SeedStrategies`（启动种子）；另 `cmd/analysis/setup.go:336` 调 Seed | 只有本仓：`internal/asset.PG` 的 `CreateDefinition` / `Promote` / `Deprecate` / 内置登记；**零**写 `quant.strategies` | `tellurion:pkg/storage/strategies.go`（已删）；`internal/asset/pgstore.go:57,393,420` | 已收口（core 已删表停写，本仓唯一写者） |
 | 时间戳 | `created_at` / `updated_at`（`NOW()`，upsert 时刷新 `updated_at`） | `created_at` / `updated_at`（`now()`；本仓不改写 `created_at`） | `tellurion:docs/migrations/011_add_strategies_table.sql:12-13`；`internal/asset/ddl.go:36-37` | 已对齐 |
 
@@ -121,6 +121,10 @@ QT-20 的 run 级参数投递。本仓登记 14 条 `carrier=builtin` 是**可�
 - **builtin 的版本级激活（2026-11-12）**：追加迁移把上述 CHECK 换成具名的 `strategy_definitions_active_ck`，
   为 `carrier='builtin'` 放行「有 `active_version_hash`、无 `active_artifact_hash`」。理由与替代方案见
   `docs/adr/0006-builtin无artifact激活路径.md`；wasm / so 的「两者同时出现」未被放宽。
+- **内置策略出厂种子（2026-11-13，F6）**：`RegisterBuiltins` 在单事务里为 14 个内置策略写
+  「定义 + 出厂版本 + `active_version_hash`」，`strategy_promotions` 追加 `actor=factory-seed` 的审计；
+  已存在且有人动过（有 active 或任版本行）整条跳过，只有「定义在、无版本、无 active」的旧库形态被补齐。
+  根因与判据见 `docs/adr/0007-内置策略出厂种子.md`。
 - **artifact 主键（2026-10-23，同上 ADR）**：`PRIMARY KEY (strategy_id, artifact_hash)` + `UNIQUE (strategy_id, version_hash, toolchain)`。
   同源码 × 两工具链 → 两行可分别追溯；同字节跨工具链不产生第二行（内容寻址优先，谁编译的以该行 `toolchain` 为准，
   不允许同一份字节出现两条互相矛盾的「编译来源」）。

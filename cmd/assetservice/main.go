@@ -156,18 +156,20 @@ func run() error {
 		return fmt.Errorf("configure compiler: %w", err)
 	}
 
-	svc, err := asset.New(asset.Options{Store: store, Compiler: compiler, Cache: cache})
+	svc, err := asset.New(asset.Options{
+		Store: store, Compiler: compiler, Cache: cache, PromotionLog: promotionLog,
+	})
 	if err != nil {
 		return err
 	}
-	// G 裁决：内置策略保留 core 的 init 注册，这里在启动时同步登记定义
-	// （carrier=builtin、无 artifact），消除「引擎自带一套、服务不知道」的
-	// 第二真相源。幂等：已存在只核对形状，不覆盖。
+	// G 裁决：内置策略保留 core 的 init 注册，这里在启动时同步登记
+	// 「定义 + 出厂版本 + 版本级激活」（carrier=builtin、无 artifact）。
+	// 幂等：已存在且有人动过只核对形状、不覆盖；F6 修复见 ADR-0007。
 	registered, err := svc.RegisterBuiltins(ctx)
 	if err != nil {
 		return fmt.Errorf("register builtins: %w", err)
 	}
-	slog.Info("builtin strategies registered", "count", registered)
+	slog.Info("builtin strategies seeded", "count", registered, "seed_version", asset.FactorySeedVersion)
 	// 三态装配：第 3 态（显式 loopback-published）用开放闸；第 1/2 态都走 kit
 	// 闸（有 secret ⇒ 全闸；无 secret ⇒ 受保护路由 503、读端点公开）。
 	authorizer := httpapi.NewAuthorizer(tokens)
