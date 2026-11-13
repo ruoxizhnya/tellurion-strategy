@@ -49,7 +49,9 @@ go test ./...
   - PG：`STRATEGY_TEST_DSN='postgres://postgres:postgres@127.0.0.1:5432/tellurion_strategy_test?sslmode=disable' go test ./internal/asset -count=1`
   - 真工具链：`STRATEGY_TINYGO_IMAGE=tinygo/tinygo:0.34.0 go test ./internal/compile -run TestCompile_RealTinyGoImage -v`
     （证据与复现步骤见 `docs/evidence/QT-41b-tinygo-0.34.0.md`）
-- CI（`.github/workflows/ci.yml`，单 job `go`）：`gofmt` → `go build` → `go vet` → `govulncheck@latest ./...`（依赖漏洞门，X-DEP-BUMP-CONSUMERS）→ `go test ./... -count=1` → `go test -race ./... -count=1`（竞态门，X-CI-RACE-STATICCHECK）→ `staticcheck@v0.8.2 ./...`（`go run`，版本已钉）。
+- CI（`.github/workflows/ci.yml`，单 job `go`）：`gofmt` → `go build` → `go vet` → `govulncheck@latest ./...`（依赖漏洞门，X-DEP-BUMP-CONSUMERS）→ **Apply migrations（`asset.PG.Migrate`，即 `TestPGMigrationsAreReplayable`）** → `go test ./... -count=1 -coverprofile=coverage.out` + **覆盖率门**（STRATEGY-CI-GATES）→ `go test -race ./... -count=1`（竞态门，X-CI-RACE-STATICCHECK）→ `staticcheck@v0.8.2 ./...`（`go run`，版本已钉）。
+- **CI 的 DB 腿（STRATEGY-CI-GATES，2026-11-13）**：Test job 起 `postgres:16` service（`pg_isready`）+ job 级注入 `STRATEGY_TEST_DSN`（CI 内临时库 `tellurion_strategy_test`，**绝不指向部署库**）。Test 前先跑 `go test ./internal/asset -run '^TestPGMigrationsAreReplayable$' -count=1 -v` 应用迁移——入口就是服务启动同款 `PG.Migrate`（`ddl.go` 是 `strategy` schema 唯一建表真相，幂等只前滚），不另造 `.sql` 镜像、不复制 core 脚本。效果：库侧 **14 条**用例由 SKIP 转 PASS（带 DSN 159 PASS / 1 SKIP〔仅 tinygo 设计性 skip〕，无 DSN 145 PASS / 15 SKIP）；**本地不设 DSN 仍按设计 skip**。
+- **覆盖率门（STRATEGY-CI-GATES）**：阈值 **72%**（语句加权，`go tool cover -func` 的 total），来源 = 2026-11-13 在隔离 PG 16 上真跑全套件实测 **77.6%**（2,575 条语句），取整 77 减 5（跨仓口径见 `tellurion:docs/TASKS.md` → `X-COVERAGE-FLOOR`）。低于阈值 `exit 1`。**这 5 点余量是防累计漂移的缓冲**：删单个可编译测试文件最多掉 3.1 点（`internal/asset/builtin_test.go` ⇒ 74.5%），整包测试全删（`internal/compilerclient`）也只掉 4.0 点（73.6%）；漏配 DSN 时实测 **66.1% < 72% 直接红**（门真正要拦的事故）。删到破坏编译的用例（如 `internal/asset/asset_test.go`）时测试步 `EXIT=1` 红。
 
 ## 3. 边界（硬约束）
 

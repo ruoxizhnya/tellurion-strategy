@@ -12,6 +12,23 @@ jobs:
   go:
     name: Build & Test
     runs-on: ubuntu-latest
+    # STRATEGY-CI-GATES：库侧用例不再长期 skip——起真 PG，Test 全腿带 DSN 跑。
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tellurion_strategy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      STRATEGY_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/tellurion_strategy_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
 
@@ -39,8 +56,27 @@ jobs:
       - name: Govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+      # STRATEGY-CI-GATES：Test 前应用本仓迁移。合法入口只有 internal/asset 的
+      # PG.Migrate（ddl.go 是 strategy schema 唯一建表真相，幂等只前滚）；本仓没有
+      # 独立 migrate 子命令，现成的执行腿就是 g2 迁移重放用例（连跑两次并比对指纹）。
+      # 不手写 SQL、不复制 core 脚本。
+      - name: Apply migrations（asset.PG.Migrate）
+        run: go test ./internal/asset -run '^TestPGMigrationsAreReplayable$' -count=1 -v
+
       - name: Test
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -coverprofile=coverage.out
+
+      # STRATEGY-CI-GATES：覆盖率门。阈值来源见 AGENTS.md §2：2026-11-13 隔离
+      # PG 16 真跑全套件实测 77.6%，取整 77 − 5 = 72。
+      - name: Coverage gate
+        run: |
+          total="$(go tool cover -func=coverage.out | tail -n 1 | awk '{print $3}' | tr -d '%')"
+          echo "total coverage: ${total}% (floor: 72%)"
+          if [ -z "$total" ]; then
+            echo "coverage total not parsed from coverage.out"
+            exit 1
+          fi
+          awk -v total="$total" 'BEGIN { if (total + 0 < 72) { printf "coverage %.1f%% is below the 72%% floor\n", total; exit 1 } }'
 
       # X-CI-RACE-STATICCHECK：竞态门。ubuntu-latest 自带 gcc，cgo 可用。
       - name: Test（-race）

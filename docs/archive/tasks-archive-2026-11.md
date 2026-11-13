@@ -26,6 +26,7 @@
 | X-CI-RACE-STATICCHECK | CI 补 `-race` 与 `staticcheck`（含 1 条存量告警清理） | 2026-11-12 | 见本条 | [施工记录](#X-CI-RACE-STATICCHECK) |
 | X-LOW-CLEANUP（strategy 腿） | Dockerfile 里的退役服务名 `strategy-service` 改为 `assetservice` | 2026-11-12 | 见本条 | [施工记录](#X-LOW-CLEANUP-strategy) |
 | STRAT-COMPOSE-AUTH-INJECT | 统一栈 ai-service 段补资产登记地址与 service token | 2026-11-12 | core `0892bbc` | [原文](#STRAT-COMPOSE-AUTH-INJECT) |
+| STRATEGY-CI-GATES | CI 起 PG 16 + 覆盖率门（库侧 14 条 SKIP→PASS；实测 77.6% → 门 72%） | 2026-11-13 | 见本条 | [原文与施工记录](#STRATEGY-CI-GATES) |
 
 ---
 
@@ -717,3 +718,27 @@
 > - **ai-service 侧**：同一 token 起**隔离** ai-service（`127.0.0.1:18086`，挂在 `tellurion_default` 网络、临时 env），日志 `{"url":"http://strategy:8090","carrier":"dsl","token_configured":true,...}`（空 token 时是同一条的 `token_configured:false` + 401 warn）；容器内 `curl http://strategy:8090/healthz` → **200**，证明缺省值在 full 网络里真的可达。
 > - **仍未跑的一环（如实）**：agent 的 copilot **自动**登记链（`pkg/copilot` → `Register`）需要 LLM 生成配额；本轮验到「契约 + service token + 缺省 URL」为止，没有用 LLM 触发那条链路。它与本轮验证的差别只在触发入口，登记请求本身是同一个 `create → source`。
 > - **清理**：两个隔离容器已 `rm -f`，`%TEMP%\tellurion-credcheck` 已删除；主栈（7 容器）未动。
+
+---
+
+## 2026-11-13 收口
+
+<a id="STRATEGY-CI-GATES"></a>
+### STRATEGY-CI-GATES · CI 起 PG 并设覆盖率门（4 条 DB 用例不再 skip）[P2] ✅ 2026-11-13
+
+> 档 4（测试）· 来源：03-testing P1-3 / P2-2 · 顺序 4-8 · 依赖：core 伞 `X-COVERAGE-FLOOR`
+
+- **① 目标**：CI 真跑 DB 腿（4 条按设计 skip 的用例），并补覆盖率门。
+- **② 上下文**：Test job 无 postgres service / 无 DSN，库侧用例长期 skip；DSN 变量名与迁移入口施工时以测试代码为准。
+- **③ 要求**：① 加 `postgres:16` service + healthcheck；② 注入 DSN；③ Test 前应用本仓迁移；④ 本地无 DSN 仍 skip；⑤ 覆盖率门 = 实测 - 5。
+- **④ 约束与非目标**：不改业务代码；不把 skip 改成假通过；不顺手改策略语义。
+- **⑤ 验收**：CI 中 DB 用例 PASS（数量 > 0）；删测试 ⇒ 门红；本地无 DSN ⇒ skip 且原因可读。
+- **⑥ 边界**：本仓 CI + 测试夹具。
+
+**施工记录（2026-11-13）**：
+- **DSN / 迁移口径（实测取得）**：库侧用例统一读 `STRATEGY_TEST_DSN`；迁移合法入口只有 `internal/asset` 的 `PG.Migrate`（`ddl.go` 是 `strategy` schema 唯一建表真相，幂等只前滚），本仓无独立 migrate 子命令，CI 复用现成的 g2 迁移重放用例 `TestPGMigrationsAreReplayable`（连跑两次并比对指纹），不手写 SQL、不复制 core 脚本。
+- **CI 改动**：`.github/workflows/ci.yml` 的 Test job 起 `postgres:16` service（`pg_isready`，5s/5s/10 次）+ job 级注入 `STRATEGY_TEST_DSN`（CI 内临时库，**绝不指向部署库**）；新增 `Apply migrations（asset.PG.Migrate）` 步；`Test` 步改 `go test ./... -count=1 -coverprofile=coverage.out`；新增 `Coverage gate` 步（`go tool cover -func` 最后一行取 total，解析不到也 `exit 1`，低于 72 即红）；`-race` / `staticcheck` / `govulncheck` 步不变。
+- **实测（隔离 PG 16 容器 55432 / 库 `tellurion_strategy_test`，未碰部署库 `tellurion`）**：带 DSN `159 PASS / 1 SKIP`（仅 `TestCompile_RealTinyGoImage`，按设计需 `STRATEGY_TINYGO_IMAGE`）、覆盖率 `total: 77.6%`（2,575 条语句）；无 DSN `145 PASS / 15 SKIP`（14 条 DB 腿 + tinygo 1 条）、`66.1%`。单内标题的「4 条」是旧口径，**实测库侧 14 条**由 SKIP 转 PASS，已按实测改正（不改测试凑数）。门 = 77 取整 - 5 = **72%**。
+- **破坏 / 负向验证（真做真还原）**：① 删 `internal/asset/asset_test.go` ⇒ `internal/asset [build failed]`、`EXIT=1` 红，`Copy-Item` 逐字节还原后 `git status` 该文件为空、复绿；② 可编译单文件最大影响 3.1 点（删 `internal/asset/builtin_test.go` ⇒ 74.5%），整包测试全删（`internal/compilerclient/compilerclient_test.go` ⇒ 包覆盖 0.0%）也只掉 4.0 点（73.6%），均仍在门内——故 5 点余量按「防累计漂移」定位，**不是**「删任一测试文件必红」；③ 漏配 DSN ⇒ 66.1% < 72% 门红（门真正要拦的事故）。
+- **文档**：`AGENTS.md` §2 补 CI 链（迁移步 + 覆盖率门）与两条 bullet（DB 腿 14 条 SKIP→PASS；门 72% 的来源、边界与破坏验证）；`docs/TASKS.md` 移除本单六字段块、frontmatter 记 `completed-2026-11-13`。
+- **门禁**：`gofmt -l .` 无输出；`go build ./...` / `go vet ./...` / `go test ./... -count=1`（无 DSN，库侧按设计 skip）全绿；`python -c "import yaml;yaml.safe_load(open('.github/workflows/ci.yml'))"` 解析通过。
